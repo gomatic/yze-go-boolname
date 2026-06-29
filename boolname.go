@@ -29,7 +29,7 @@ var Analyzer = &analysis.Analyzer{
 var Registration = goyze.Registration{
 	Name:       "boolname",
 	Categories: []goyze.Category{"naming"},
-	URL:        "https://docs.gomatic.dev/yze/go/boolname",
+	URL:        "https://docs.gomatic.dev/yze/boolname",
 	Analyzer:   Analyzer,
 }
 

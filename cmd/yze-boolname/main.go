@@ -1,5 +1,5 @@
-// Command yze-go-boolname runs the boolname analyzer as a standalone go/analysis
-// checker (text, -json, and -fix output, and as a `go vet -vettool`).
+// Command yze-boolname runs the boolname analyzer as a standalone go/analysis
+// checker (text and -json output, and as a `go vet -vettool`).
 package main
 
 import (
