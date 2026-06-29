@@ -7,6 +7,8 @@ import (
 	"go/ast"
 	"go/types"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	goyze "github.com/gomatic/go-yze"
 	"golang.org/x/tools/go/analysis"
@@ -70,7 +72,11 @@ func checkName(pass *analysis.Pass, name *ast.Ident) {
 		return
 	}
 	if isBoolean(pass, name) && !wellNamed(name.Name) {
-		pass.Reportf(name.Pos(), "boolean %s should use an is/has/can/should/will prefix or an Enabled/Disabled suffix", name.Name)
+		pass.Reportf(
+			name.Pos(),
+			"boolean %s should use an is/has/can/should/will prefix or an Enabled/Disabled suffix",
+			name.Name,
+		)
 	}
 }
 
@@ -101,13 +107,17 @@ func matchesPrefix(name, prefix string) bool {
 		return false
 	}
 	rest := name[len(prefix):]
-	return rest != "" && isUpper(rest[0])
+	return rest != "" && startsUpper(rest)
+}
+
+// startsUpper reports whether rest begins with an uppercase or titlecase rune,
+// marking the word boundary that follows a predicate prefix. Decoding the first
+// rune (rather than the lead byte) admits non-ASCII boundaries such as "État".
+func startsUpper(rest string) bool {
+	r, _ := utf8.DecodeRuneInString(rest)
+	return unicode.IsUpper(r) || unicode.IsTitle(r)
 }
 
 func hasFlagSuffix(name string) bool {
 	return strings.HasSuffix(name, "Enabled") || strings.HasSuffix(name, "Disabled")
-}
-
-func isUpper(b byte) bool {
-	return b >= 'A' && b <= 'Z'
 }

@@ -26,19 +26,33 @@ func prefixed(canRetry, shouldRun, willStart, featureDisabled bool) bool {
 
 // boundary exercises the word-boundary guard: island/hashed/willing merely begin
 // with the prefix letters is/has/will but have no boundary, so they are NOT
-// exempted and must be flagged. All three diagnostics land on the signature line.
-func boundary(island, hashed, willing bool) { // want `boolean island should use an is/has/can/should/will prefix or an Enabled/Disabled suffix` `boolean hashed should use an is/has/can/should/will prefix or an Enabled/Disabled suffix` `boolean willing should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+// exempted and must each be flagged on their own parameter line.
+func boundary(
+	island bool, // want `boolean island should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+	hashed bool, // want `boolean hashed should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+	willing bool, // want `boolean willing should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+) {
 	_, _, _ = island, hashed, willing
 }
 
 // toggle exercises boolean parameters, including a blank parameter.
-func toggle(force bool, _ bool) bool { // want `boolean force should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+func toggle(
+	force bool, // want `boolean force should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+	_ bool,
+) bool {
 	return force
 }
 
 // query exercises a named boolean result.
 func query() (ready bool) { // want `boolean ready should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
 	return false
+}
+
+// unicodeBoundary exercises non-ASCII word boundaries after a predicate prefix:
+// "isÉtat" is is + titlecase "État" and "isǅefg" is is + a titlecase rune, so the
+// first rune (not the lead byte) marks the boundary and neither must be flagged.
+func unicodeBoundary(isÉtat, isǅefg bool) {
+	_, _ = isÉtat, isǅefg
 }
 
 // noop exercises a function with no results.
