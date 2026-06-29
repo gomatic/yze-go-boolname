@@ -3,10 +3,11 @@ package main
 import (
 	"testing"
 
-	boolname "github.com/gomatic/yze-go-boolname"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/tools/go/analysis"
+
+	boolname "github.com/gomatic/yze-boolname"
 )
 
 func TestMainRunsTheAnalyzer(t *testing.T) {

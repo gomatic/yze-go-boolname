@@ -3,9 +3,10 @@ package boolname_test
 import (
 	"testing"
 
-	boolname "github.com/gomatic/yze-go-boolname"
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/tools/go/analysis/analysistest"
+
+	boolname "github.com/gomatic/yze-boolname"
 )
 
 func TestBooleanNamingIsReported(t *testing.T) {
@@ -14,6 +15,6 @@ func TestBooleanNamingIsReported(t *testing.T) {
 
 func TestRegistrationIsWellFormed(t *testing.T) {
 	assert.NoError(t, boolname.Registration.Validate())
-	assert.Equal(t, "yze/go/boolname", boolname.Registration.RuleID())
+	assert.Equal(t, "yze/boolname", boolname.Registration.RuleID())
 	assert.Same(t, boolname.Analyzer, boolname.Registration.Analyzer)
 }

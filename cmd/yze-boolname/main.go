@@ -3,8 +3,9 @@
 package main
 
 import (
-	boolname "github.com/gomatic/yze-go-boolname"
 	"golang.org/x/tools/go/analysis/singlechecker"
+
+	boolname "github.com/gomatic/yze-boolname"
 )
 
 // run is the analysis entry point, indirected so the binary's wiring is testable

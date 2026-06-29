@@ -28,7 +28,6 @@ var Analyzer = &analysis.Analyzer{
 // Registration declares this analyzer to the yze framework.
 var Registration = goyze.Registration{
 	Name:       "boolname",
-	Group:      "go",
 	Categories: []goyze.Category{"naming"},
 	URL:        "https://docs.gomatic.dev/yze/go/boolname",
 	Analyzer:   Analyzer,
