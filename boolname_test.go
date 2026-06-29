@@ -1,0 +1,19 @@
+package boolname_test
+
+import (
+	"testing"
+
+	boolname "github.com/gomatic/yze-go-boolname"
+	"github.com/stretchr/testify/assert"
+	"golang.org/x/tools/go/analysis/analysistest"
+)
+
+func TestBooleanNamingIsReported(t *testing.T) {
+	analysistest.Run(t, analysistest.TestData(), boolname.Analyzer, "a")
+}
+
+func TestRegistrationIsWellFormed(t *testing.T) {
+	assert.NoError(t, boolname.Registration.Validate())
+	assert.Equal(t, "yze/go/boolname", boolname.Registration.RuleID())
+	assert.Same(t, boolname.Analyzer, boolname.Registration.Analyzer)
+}
