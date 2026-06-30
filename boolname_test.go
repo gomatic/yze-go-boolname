@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/tools/go/analysis/analysistest"
 
-	boolname "github.com/gomatic/yze-boolname"
+	boolname "github.com/gomatic/yze-go-boolname"
 )
 
 func TestBooleanNamingIsReported(t *testing.T) {

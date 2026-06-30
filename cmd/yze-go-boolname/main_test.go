@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/tools/go/analysis"
 
-	boolname "github.com/gomatic/yze-boolname"
+	boolname "github.com/gomatic/yze-go-boolname"
 )
 
 func TestMainRunsTheAnalyzer(t *testing.T) {

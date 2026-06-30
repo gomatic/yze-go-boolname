@@ -1,4 +1,4 @@
-module github.com/gomatic/yze-boolname
+module github.com/gomatic/yze-go-boolname
 
 go 1.26.4
 
