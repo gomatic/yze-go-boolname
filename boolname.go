@@ -20,7 +20,10 @@ import (
 	"golang.org/x/tools/go/ast/inspector"
 )
 
-var prefixes = []string{"is", "has", "can", "should", "will"}
+// predicatePrefix is one of the sanctioned boolean predicate prefixes.
+type predicatePrefix string
+
+var prefixes = []predicatePrefix{"is", "has", "can", "should", "will"}
 
 // message is the diagnostic format; its one verb is the ill-named identifier.
 const message = "boolean %s should use an is/has/can/should/will prefix or an Enabled/Disabled suffix"
@@ -146,14 +149,14 @@ func collides(scope *types.Scope, proposed identName) bool {
 	if _, obj := scope.LookupParent(string(proposed), token.NoPos); obj != nil {
 		return true
 	}
-	return declaredWithin(scope, string(proposed))
+	return declaredWithin(scope, proposed)
 }
 
 // declaredWithin reports whether name is declared in any scope nested below scope.
-func declaredWithin(scope *types.Scope, name string) bool {
+func declaredWithin(scope *types.Scope, name identName) bool {
 	for i := range scope.NumChildren() {
 		child := scope.Child(i)
-		if child.Lookup(name) != nil || declaredWithin(child, name) {
+		if child.Lookup(string(name)) != nil || declaredWithin(child, name) {
 			return true
 		}
 	}
@@ -191,7 +194,7 @@ func commentEdits(pass *analysis.Pass, obj types.Object, proposed identName) []a
 	var edits []analysis.TextEdit
 	for _, group := range groups {
 		for _, comment := range group.List {
-			edits = append(edits, wordEdits(comment, obj.Name(), string(proposed))...)
+			edits = append(edits, wordEdits(comment, identName(obj.Name()), proposed)...)
 		}
 	}
 	return edits
@@ -261,16 +264,16 @@ func groupsWithin(file *ast.File, lo, hi token.Pos) []*ast.CommentGroup {
 // wordEdits returns one edit per word-boundary occurrence of old in comment's
 // text. A comment's text is contiguous source bytes, so a byte offset into it
 // maps directly onto the fset via the comment's position.
-func wordEdits(comment *ast.Comment, old, proposed string) []analysis.TextEdit {
+func wordEdits(comment *ast.Comment, old, proposed identName) []analysis.TextEdit {
 	var edits []analysis.TextEdit
 	for from := 0; ; {
-		i := strings.Index(comment.Text[from:], old)
+		i := strings.Index(comment.Text[from:], string(old))
 		if i < 0 {
 			return edits
 		}
 		at := from + i
 		from = at + 1
-		if isWord(commentText(comment.Text), at, len(old)) {
+		if isWord(commentText(comment.Text), byteOffset(at), byteCount(len(old))) {
 			edits = append(edits, editAt(comment.Pos()+token.Pos(at), old, proposed))
 			from = at + len(old)
 		}
@@ -278,21 +281,27 @@ func wordEdits(comment *ast.Comment, old, proposed string) []analysis.TextEdit {
 }
 
 // editAt replaces the len(old) bytes at pos with proposed.
-func editAt(pos token.Pos, old, proposed string) analysis.TextEdit {
+func editAt(pos token.Pos, old, proposed identName) analysis.TextEdit {
 	return analysis.TextEdit{Pos: pos, End: pos + token.Pos(len(old)), NewText: []byte(proposed)}
 }
 
 // commentText is the raw source text of a comment, comment markers included.
 type commentText string
 
+// byteOffset is a byte offset into a comment's source text.
+type byteOffset int
+
+// byteCount is a length in bytes of a comment-text match.
+type byteCount int
+
 // isWord reports whether the n bytes of text at offset `at` are delimited on
 // both sides by non-identifier runes; the start and end of text count as
 // boundaries (DecodeRune on an empty string yields RuneError, which is not an
 // identifier rune). A mention inside a longer identifier (dryRun, laundry)
 // therefore never matches.
-func isWord(text commentText, at, n int) bool {
+func isWord(text commentText, at byteOffset, n byteCount) bool {
 	before, _ := utf8.DecodeLastRuneInString(string(text)[:at])
-	after, _ := utf8.DecodeRuneInString(string(text)[at+n:])
+	after, _ := utf8.DecodeRuneInString(string(text)[int(at)+int(n):])
 	return !isIdentRune(boundaryRune(before)) && !isIdentRune(boundaryRune(after))
 }
 
@@ -331,7 +340,7 @@ func wellNamed(name identName) bool {
 
 func hasPredicatePrefix(name identName) bool {
 	for _, prefix := range prefixes {
-		if matchesPrefix(string(name), prefix) {
+		if matchesPrefix(name, prefix) {
 			return true
 		}
 	}
@@ -339,8 +348,8 @@ func hasPredicatePrefix(name identName) bool {
 }
 
 // matchesPrefix reports whether name begins with prefix at a word boundary.
-func matchesPrefix(name, prefix string) bool {
-	if !strings.HasPrefix(strings.ToLower(name), prefix) {
+func matchesPrefix(name identName, prefix predicatePrefix) bool {
+	if !strings.HasPrefix(strings.ToLower(string(name)), string(prefix)) {
 		return false
 	}
 	rest := name[len(prefix):]
