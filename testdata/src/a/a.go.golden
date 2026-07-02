@@ -24,7 +24,7 @@ func prefixed(canRetry, shouldRun, willStart, featureDisabled bool) bool {
 	return canRetry && shouldRun && willStart && featureDisabled
 }
 
-// boundary exercises the word-boundary guard: island/hashed/willing merely begin
+// boundary exercises the word-boundary guard: isIsland/isHashed/isWilling merely begin
 // with the prefix letters is/has/will but have no boundary, so they are NOT
 // exempted and must each be flagged on their own parameter line.
 func boundary(
@@ -44,7 +44,7 @@ func toggle(
 }
 
 // query exercises a named boolean result.
-func query() (isReady bool) { // want `boolean ready should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+func query() (isReady bool) { // want `boolean isReady should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
 	return false
 }
 
@@ -97,7 +97,7 @@ func nestedCollision(
 
 // naked exercises a named result referenced by assignment and a naked return:
 // both the declaration and the assignment must be rewritten.
-func naked() (isDone bool) { // want `boolean done should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+func naked() (isDone bool) { // want `boolean isDone should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
 	isDone = true
 	return
 }
@@ -105,7 +105,7 @@ func naked() (isDone bool) { // want `boolean done should use an is/has/can/shou
 // literal exercises a func-literal parameter: the declaration and the body
 // reference must both be rewritten.
 var literal = func(
-	isValid bool, // want `boolean valid should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+	isValid bool, // want `boolean isValid should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
 ) bool {
 	return isValid
 }
@@ -125,7 +125,7 @@ type Hooks struct {
 }
 
 // accent exercises a multi-byte first rune: the whole rune (not the lead byte)
-// must be upcased, so état becomes isÉtat.
+// must be upcased, so isÉtat becomes isÉtat.
 func accent(
 	isÉtat bool, // want `boolean état should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
 ) bool {
