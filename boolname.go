@@ -52,7 +52,7 @@ func run(pass *analysis.Pass) (any, error) {
 		_, isStruct := n.(*ast.StructType)
 		for _, field := range fieldsOf(n) {
 			for _, name := range field.Names {
-				checkName(pass, name, !isStruct)
+				checkName(pass, name, isFixableParam(!isStruct))
 			}
 		}
 	})
@@ -76,14 +76,17 @@ func listOf(fields *ast.FieldList) []*ast.Field {
 	return fields.List
 }
 
+// isFixableParam names the isFixable parameter of checkName; rename it to the real domain concept.
+type isFixableParam bool
+
 // checkName reports name when it is boolean but not predicate- or flag-named,
 // attaching a rename fix when isFixable and the rename is provably safe. The
 // blank identifier carries no name to constrain and is skipped.
-func checkName(pass *analysis.Pass, name *ast.Ident, isFixable bool) {
+func checkName(pass *analysis.Pass, name *ast.Ident, isFixable isFixableParam) {
 	if name.Name == "_" {
 		return
 	}
-	if !isBoolean(pass, name) || wellNamed(name.Name) {
+	if !isBoolean(pass, name) || wellNamed(nameParam(name.Name)) {
 		return
 	}
 	pass.Report(analysis.Diagnostic{
@@ -105,16 +108,19 @@ func checkName(pass *analysis.Pass, name *ast.Ident, isFixable bool) {
 // scope is a collision; both keep the diagnostic fix-free. The fix rewrites the
 // code references and sweeps the symbol's scope comments (doc + body) so prose
 // mentions of the old name do not go stale.
-func fixesFor(pass *analysis.Pass, name *ast.Ident, isFixable bool) []analysis.SuggestedFix {
-	if !isFixable || token.IsExported(name.Name) {
+func fixesFor(pass *analysis.Pass, name *ast.Ident, isFixable isFixableParam) []analysis.SuggestedFix {
+	if !bool(isFixable) || token.IsExported(name.Name) {
 		return nil
 	}
-	proposed := "is" + upperFirst(name.Name)
+	proposed := "is" + upperFirst(nameParam(name.Name))
 	obj := pass.TypesInfo.Defs[name]
-	if collides(obj.Parent(), proposed) {
+	if collides(obj.Parent(), proposedParam(proposed)) {
 		return nil
 	}
-	edits := append(renameEdits(pass, obj, proposed), commentEdits(pass, obj, proposed)...)
+	edits := append(
+		renameEdits(pass, obj, proposedParam(proposed)),
+		commentEdits(pass, obj, proposedParam(proposed))...,
+	)
 	slices.SortFunc(edits, func(a, b analysis.TextEdit) int { return int(a.Pos - b.Pos) })
 	return []analysis.SuggestedFix{{
 		Message:   fmt.Sprintf("rename %s to %s", name.Name, proposed),
@@ -122,22 +128,28 @@ func fixesFor(pass *analysis.Pass, name *ast.Ident, isFixable bool) []analysis.S
 	}}
 }
 
+// nameParam names the name parameter of upperFirst; rename it to the real domain concept.
+type nameParam string
+
 // upperFirst upcases name's first rune, decoding it (rather than the lead byte)
 // so a multi-byte initial such as the é of "état" round-trips correctly.
-func upperFirst(name string) string {
-	r, size := utf8.DecodeRuneInString(name)
-	return string(unicode.ToUpper(r)) + name[size:]
+func upperFirst(name nameParam) string {
+	r, size := utf8.DecodeRuneInString(string(name))
+	return string(unicode.ToUpper(r)) + string(name)[size:]
 }
+
+// proposedParam names the proposed parameter of collides; rename it to the real domain concept.
+type proposedParam string
 
 // collides reports whether proposed is already declared in the signature scope
 // or any scope enclosing it (function-body locals share the signature scope;
 // file and package scopes enclose it), or in any scope nested within it, where
 // the renamed identifier would be shadowed.
-func collides(scope *types.Scope, proposed string) bool {
-	if _, obj := scope.LookupParent(proposed, token.NoPos); obj != nil {
+func collides(scope *types.Scope, proposed proposedParam) bool {
+	if _, obj := scope.LookupParent(string(proposed), token.NoPos); obj != nil {
 		return true
 	}
-	return declaredWithin(scope, proposed)
+	return declaredWithin(scope, string(proposed))
 }
 
 // declaredWithin reports whether name is declared in any scope nested below scope.
@@ -154,11 +166,11 @@ func declaredWithin(scope *types.Scope, name string) bool {
 // renameEdits rewrites obj's declaration and every reference to proposed.
 // Signature names are only referenceable from their own signature and body, so
 // the declaring file contains every ident that resolves to obj.
-func renameEdits(pass *analysis.Pass, obj types.Object, proposed string) []analysis.TextEdit {
+func renameEdits(pass *analysis.Pass, obj types.Object, proposed proposedParam) []analysis.TextEdit {
 	var edits []analysis.TextEdit
 	ast.Inspect(fileOf(pass, obj.Pos()), func(n ast.Node) bool {
 		if id, ok := n.(*ast.Ident); ok && resolvesTo(pass, id, obj) {
-			edits = append(edits, analysis.TextEdit{Pos: id.Pos(), End: id.End(), NewText: []byte(proposed)})
+			edits = append(edits, analysis.TextEdit{Pos: id.Pos(), End: id.End(), NewText: []byte(string(proposed))})
 		}
 		return true
 	})
@@ -172,7 +184,7 @@ func renameEdits(pass *analysis.Pass, obj types.Object, proposed string) []analy
 // enclosing function's doc describes the outer function, not the literal's
 // parameter. A symbol with no enclosing function (an interface method, a
 // func-type struct field) owns no prose, so nothing is swept.
-func commentEdits(pass *analysis.Pass, obj types.Object, proposed string) []analysis.TextEdit {
+func commentEdits(pass *analysis.Pass, obj types.Object, proposed proposedParam) []analysis.TextEdit {
 	file := fileOf(pass, obj.Pos())
 	doc, lo, hi := sweepScope(enclosingFunc(file, obj.Pos()))
 	groups := groupsWithin(file, lo, hi)
@@ -182,7 +194,7 @@ func commentEdits(pass *analysis.Pass, obj types.Object, proposed string) []anal
 	var edits []analysis.TextEdit
 	for _, group := range groups {
 		for _, comment := range group.List {
-			edits = append(edits, wordEdits(comment, obj.Name(), proposed)...)
+			edits = append(edits, wordEdits(comment, obj.Name(), string(proposed))...)
 		}
 	}
 	return edits
@@ -261,7 +273,7 @@ func wordEdits(comment *ast.Comment, old, proposed string) []analysis.TextEdit {
 		}
 		at := from + i
 		from = at + 1
-		if isWord(comment.Text, at, len(old)) {
+		if isWord(textParam(comment.Text), at, len(old)) {
 			edits = append(edits, editAt(comment.Pos()+token.Pos(at), old, proposed))
 			from = at + len(old)
 		}
@@ -273,20 +285,26 @@ func editAt(pos token.Pos, old, proposed string) analysis.TextEdit {
 	return analysis.TextEdit{Pos: pos, End: pos + token.Pos(len(old)), NewText: []byte(proposed)}
 }
 
+// textParam names the text parameter of isWord; rename it to the real domain concept.
+type textParam string
+
 // isWord reports whether the n bytes of text at offset `at` are delimited on
 // both sides by non-identifier runes; the start and end of text count as
 // boundaries (DecodeRune on an empty string yields RuneError, which is not an
 // identifier rune). A mention inside a longer identifier (dryRun, laundry)
 // therefore never matches.
-func isWord(text string, at, n int) bool {
-	before, _ := utf8.DecodeLastRuneInString(text[:at])
-	after, _ := utf8.DecodeRuneInString(text[at+n:])
-	return !isIdentRune(before) && !isIdentRune(after)
+func isWord(text textParam, at, n int) bool {
+	before, _ := utf8.DecodeLastRuneInString(string(text)[:at])
+	after, _ := utf8.DecodeRuneInString(string(text)[at+n:])
+	return !isIdentRune(rParam(before)) && !isIdentRune(rParam(after))
 }
 
+// rParam names the r parameter of isIdentRune; rename it to the real domain concept.
+type rParam rune
+
 // isIdentRune reports whether r can appear in a Go identifier.
-func isIdentRune(r rune) bool {
-	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+func isIdentRune(r rParam) bool {
+	return rune(r) == '_' || unicode.IsLetter(rune(r)) || unicode.IsDigit(rune(r))
 }
 
 // resolvesTo reports whether id declares or references obj.
@@ -310,13 +328,13 @@ func isBoolean(pass *analysis.Pass, name *ast.Ident) bool {
 	return ok && basic.Kind() == types.Bool
 }
 
-func wellNamed(name string) bool {
-	return hasPredicatePrefix(name) || hasFlagSuffix(name)
+func wellNamed(name nameParam) bool {
+	return hasPredicatePrefix(nameParam(string(name))) || hasFlagSuffix(nameParam(string(name)))
 }
 
-func hasPredicatePrefix(name string) bool {
+func hasPredicatePrefix(name nameParam) bool {
 	for _, prefix := range prefixes {
-		if matchesPrefix(name, prefix) {
+		if matchesPrefix(string(name), prefix) {
 			return true
 		}
 	}
@@ -329,17 +347,20 @@ func matchesPrefix(name, prefix string) bool {
 		return false
 	}
 	rest := name[len(prefix):]
-	return rest != "" && startsUpper(rest)
+	return rest != "" && startsUpper(restParam(rest))
 }
+
+// restParam names the rest parameter of startsUpper; rename it to the real domain concept.
+type restParam string
 
 // startsUpper reports whether rest begins with an uppercase or titlecase rune,
 // marking the word boundary that follows a predicate prefix. Decoding the first
 // rune (rather than the lead byte) admits non-ASCII boundaries such as "État".
-func startsUpper(rest string) bool {
-	r, _ := utf8.DecodeRuneInString(rest)
+func startsUpper(rest restParam) bool {
+	r, _ := utf8.DecodeRuneInString(string(rest))
 	return unicode.IsUpper(r) || unicode.IsTitle(r)
 }
 
-func hasFlagSuffix(name string) bool {
-	return strings.HasSuffix(name, "Enabled") || strings.HasSuffix(name, "Disabled")
+func hasFlagSuffix(name nameParam) bool {
+	return strings.HasSuffix(string(name), "Enabled") || strings.HasSuffix(string(name), "Disabled")
 }
