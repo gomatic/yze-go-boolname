@@ -1,7 +1,10 @@
 // Package boolname provides a go/analysis analyzer enforcing the gomatic Go
-// boolean naming standard: boolean identifiers carry an is/has/can/should/will
-// predicate prefix, or an Enabled/Disabled flag suffix. For parameters and
-// named results it offers a mechanical is-prefix rename fix.
+// boolean naming standard on struct fields and function parameters and results:
+// bool and *bool names there carry an is/has/can/should/will predicate prefix,
+// or an Enabled/Disabled flag suffix. Package-level and local variables,
+// constants, and generic (~bool-constrained) type parameters are deliberately
+// out of scope. For parameters and named results it offers a mechanical
+// is-prefix rename fix.
 package boolname
 
 import (
@@ -32,7 +35,7 @@ const message = "boolean %s should use an is/has/can/should/will prefix or an En
 // predicates or flags.
 var Analyzer = &analysis.Analyzer{
 	Name:     "boolname",
-	Doc:      "reports boolean identifiers lacking an is/has/can/should/will prefix or an Enabled/Disabled suffix",
+	Doc:      "reports boolean struct fields, parameters, and results lacking an is/has/can/should/will prefix or an Enabled/Disabled suffix",
 	Requires: []*analysis.Analyzer{inspect.Analyzer},
 	Run:      run,
 }
@@ -326,11 +329,18 @@ func fileOf(pass *analysis.Pass, pos token.Pos) *ast.File {
 	})]
 }
 
-// isBoolean reports whether name's defined object has a boolean underlying type.
-// name is a non-blank field, parameter, or result identifier, which always has a
-// defined object.
+// isBoolean reports whether name's defined object has a boolean underlying
+// type, unwrapping ONE pointer level so a *bool name is checked like a bool.
+// Deeper indirection (**bool) and generic ~bool type parameters are
+// deliberately out of scope, like the vars and consts the analyzer never
+// visits. name is a non-blank field, parameter, or result identifier, which
+// always has a defined object.
 func isBoolean(pass *analysis.Pass, name *ast.Ident) bool {
-	basic, ok := pass.TypesInfo.Defs[name].Type().Underlying().(*types.Basic)
+	typ := pass.TypesInfo.Defs[name].Type().Underlying()
+	if ptr, ok := typ.(*types.Pointer); ok {
+		typ = ptr.Elem().Underlying()
+	}
+	basic, ok := typ.(*types.Basic)
 	return ok && basic.Kind() == types.Bool
 }
 
@@ -347,13 +357,33 @@ func hasPredicatePrefix(name identName) bool {
 	return false
 }
 
-// matchesPrefix reports whether name begins with prefix at a word boundary.
+// matchesPrefix reports whether name begins with prefix at a word boundary. The
+// recognized prefixes are pure ASCII, so the match is ASCII-only: a non-ASCII
+// leading rune (İ, U+0130) never matches a prefix, and name[len(prefix):] is
+// always an exact rune-boundary slice — a Unicode lowercase mapping that changes
+// byte length can never misalign it.
 func matchesPrefix(name identName, prefix predicatePrefix) bool {
-	if !strings.HasPrefix(strings.ToLower(string(name)), string(prefix)) {
+	if !hasASCIIPrefixFold(name, prefix) {
 		return false
 	}
 	rest := name[len(prefix):]
 	return rest != "" && startsUpper(nameRest(rest))
+}
+
+// hasASCIIPrefixFold reports whether name begins with the pure-ASCII lowercase
+// prefix under ASCII-only case folding: each name byte matches its prefix byte
+// exactly or with the 0x20 case bit toggled, so no byte outside ASCII (and no
+// multi-byte case mapping) can ever match.
+func hasASCIIPrefixFold(name identName, prefix predicatePrefix) bool {
+	if len(name) < len(prefix) {
+		return false
+	}
+	for i := range len(prefix) {
+		if name[i]|0x20 != prefix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // nameRest is the remainder of an identifier name after a candidate predicate prefix.
