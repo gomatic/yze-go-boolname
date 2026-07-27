@@ -1,7 +1,4 @@
 version: 2
-
-project_name: yze-boolname
-
 dist: dist
 
 git:
