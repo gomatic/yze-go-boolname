@@ -18,67 +18,23 @@ import (
 // contracts are about scope — which references belong to this symbol, and how
 // far a comment sweep may reach.
 
-// fixesFor returns the deterministic rename fix ("is" + upper-cased first rune,
-// so unexported-ness is always preserved), or nil when renaming is not provably
-// safe. Signature names are safe to rename because Go makes them referenceable
-// only from their own signature scope and function body — never from a _test.go
-// file or another package — and that includes bodyless signatures (interface
-// methods, func-type fields and variables), whose names have no references at
-// all. Exported-looking names are outside the heuristic's lowercase domain and
-// a proposed name already visible in, enclosing, or nested within the signature
-// scope is a collision; both keep the diagnostic fix-free. The fix rewrites the
-// code references and sweeps the symbol's scope comments (doc + body) so prose
-// mentions of the old name do not go stale.
-func fixesFor(pass *analysis.Pass, name *ast.Ident, isFixable fixable) []analysis.SuggestedFix {
-	if !bool(isFixable) || token.IsExported(name.Name) {
-		return nil
-	}
-	proposed := identName("is" + upperFirst(identName(name.Name)))
-	obj := pass.TypesInfo.Defs[name]
-	if collides(obj.Parent(), proposed) {
+// fixesFor returns the rename fix for a candidate that kept its proposal, and
+// nothing for one that did not. The fix rewrites the code references and sweeps
+// the symbol's scope comments (doc + body) so prose mentions of the old name do
+// not go stale.
+func fixesFor(pass *analysis.Pass, c candidate) []analysis.SuggestedFix {
+	if c.proposed == "" {
 		return nil
 	}
 	edits := append(
-		renameEdits(pass, obj, proposed),
-		commentEdits(pass, obj, proposed)...,
+		renameEdits(pass, c.obj, c.proposed),
+		commentEdits(pass, c.obj, c.proposed)...,
 	)
 	slices.SortFunc(edits, func(a, b analysis.TextEdit) int { return int(a.Pos - b.Pos) })
 	return []analysis.SuggestedFix{{
-		Message:   fmt.Sprintf("rename %s to %s", name.Name, proposed),
+		Message:   fmt.Sprintf("rename %s to %s", c.name.Name, c.proposed),
 		TextEdits: edits,
 	}}
-}
-
-// identName is a Go identifier name under the boolean-naming check, or the predicate-prefixed name proposed to replace one.
-type identName string
-
-// upperFirst upcases name's first rune, decoding it (rather than the lead byte)
-// so a multi-byte initial such as the é of "état" round-trips correctly.
-func upperFirst(name identName) string {
-	r, size := utf8.DecodeRuneInString(string(name))
-	return string(unicode.ToUpper(r)) + string(name)[size:]
-}
-
-// collides reports whether proposed is already declared in the signature scope
-// or any scope enclosing it (function-body locals share the signature scope;
-// file and package scopes enclose it), or in any scope nested within it, where
-// the renamed identifier would be shadowed.
-func collides(scope *types.Scope, proposed identName) bool {
-	if _, obj := scope.LookupParent(string(proposed), token.NoPos); obj != nil {
-		return true
-	}
-	return declaredWithin(scope, proposed)
-}
-
-// declaredWithin reports whether name is declared in any scope nested below scope.
-func declaredWithin(scope *types.Scope, name identName) bool {
-	for i := range scope.NumChildren() {
-		child := scope.Child(i)
-		if child.Lookup(string(name)) != nil || declaredWithin(child, name) {
-			return true
-		}
-	}
-	return false
 }
 
 // renameEdits rewrites obj's declaration and every reference to proposed.

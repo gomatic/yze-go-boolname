@@ -2,7 +2,9 @@ package boolname
 
 // White-box tests for the fix's scope contracts. Each is about how FAR a
 // rename may reach: too narrow leaves the code not compiling, too wide rewrites
-// a symbol that merely shares a name.
+// a symbol that merely shares a name. The harness below is shared by every
+// white-box test in the package: it builds a one-file package in memory, runs
+// the analyzer over it, and applies what the analyzer proposed.
 
 import (
 	"go/ast"
@@ -10,20 +12,38 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/tools/go/analysis"
+	"golang.org/x/tools/go/analysis/passes/inspect"
+	"golang.org/x/tools/go/ast/inspector"
 )
 
-// checked type-checks src and returns a pass carrying its syntax and types,
-// which is what every helper under test takes.
-func checked(t *testing.T, src string) (*analysis.Pass, *ast.File) {
-	t.Helper()
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "p.go", src, parser.ParseComments)
-	require.NoError(t, err)
+// source is a single-file package parsed and type-checked in memory, together
+// with whatever the analyzer reported over it.
+type source struct {
+	fset        *token.FileSet
+	file        *ast.File
+	pass        *analysis.Pass
+	err         error
+	text        string
+	diagnostics []analysis.Diagnostic
+}
+
+// compile parses and type-checks text as a one-file package. err is nil exactly
+// when the Go type checker accepts the text, so a rewritten source that fails
+// to build fails here, with the same message the compiler gives.
+func compile(text string) *source {
+	built := &source{text: text, fset: token.NewFileSet()}
+	file, err := parser.ParseFile(built.fset, "p.go", text, parser.ParseComments)
+	if err != nil {
+		built.err = err
+		return built
+	}
+	built.file = file
 
 	info := &types.Info{
 		Defs:  map[*ast.Ident]types.Object{},
@@ -31,10 +51,66 @@ func checked(t *testing.T, src string) (*analysis.Pass, *ast.File) {
 		Types: map[ast.Expr]types.TypeAndValue{},
 	}
 	conf := types.Config{Importer: importer.Default()}
-	pkg, err := conf.Check("example.test/p", fset, []*ast.File{file}, info)
-	require.NoError(t, err)
+	pkg, err := conf.Check("example.test/p", built.fset, []*ast.File{file}, info)
+	built.err = err
+	built.pass = &analysis.Pass{
+		Fset:      built.fset,
+		Files:     []*ast.File{file},
+		Pkg:       pkg,
+		TypesInfo: info,
+		ResultOf:  map[*analysis.Analyzer]any{inspect.Analyzer: inspector.New([]*ast.File{file})},
+		Report:    func(d analysis.Diagnostic) { built.diagnostics = append(built.diagnostics, d) },
+	}
+	return built
+}
 
-	return &analysis.Pass{Fset: fset, Files: []*ast.File{file}, Pkg: pkg, TypesInfo: info}, file
+// checked is compile plus the requirement that the text itself builds, which
+// every fixture must before anything is asserted about rewriting it.
+func checked(t *testing.T, text string) *source {
+	t.Helper()
+	built := compile(text)
+	require.NoError(t, built.err)
+	return built
+}
+
+// analyzed is checked plus a run of the analyzer, so diagnostics is populated.
+func analyzed(t *testing.T, text string) *source {
+	t.Helper()
+	built := checked(t, text)
+	_, err := run(built.pass)
+	require.NoError(t, err)
+	return built
+}
+
+// applied returns the text with every edit of every suggested fix spliced in,
+// which is what the `-fix` driver does. Edits are applied from the end so an
+// earlier offset is never disturbed by a later replacement.
+func (s *source) applied() string {
+	var edits []analysis.TextEdit
+	for _, diagnostic := range s.diagnostics {
+		for _, fix := range diagnostic.SuggestedFixes {
+			edits = append(edits, fix.TextEdits...)
+		}
+	}
+	slices.SortFunc(edits, func(a, b analysis.TextEdit) int { return int(b.Pos - a.Pos) })
+	text := s.text
+	for _, edit := range edits {
+		at, to := s.fset.Position(edit.Pos).Offset, s.fset.Position(edit.End).Offset
+		text = text[:at] + string(edit.NewText) + text[to:]
+	}
+	return text
+}
+
+// proposals returns the name each fix would introduce, read back out of the
+// rewritten declaration rather than out of the fix's own message.
+func (s *source) proposals() []identName {
+	var proposed []identName
+	for _, diagnostic := range s.diagnostics {
+		for _, fix := range diagnostic.SuggestedFixes {
+			proposed = append(proposed, identName(fix.TextEdits[0].NewText))
+		}
+	}
+	return proposed
 }
 
 // paramOf returns the first parameter identifier of the named function.
@@ -58,7 +134,7 @@ func paramOf(t *testing.T, file *ast.File, fn string) *ast.Ident {
 // symbols the heuristic was never validated against.
 func TestIsBooleanUnwrapsExactlyOnePointerLevel(t *testing.T) {
 	t.Parallel()
-	pass, file := checked(t, `package p
+	src := checked(t, `package p
 type Flag bool
 func plain(ready bool) {}
 func pointer(ready *bool) {}
@@ -80,7 +156,7 @@ func generic[T ~bool](ready T) {}
 		{fn: "notBool", want: false},
 		{fn: "generic", want: false},
 	} {
-		assert.Equal(t, tc.want, isBoolean(pass, paramOf(t, file, tc.fn)), "isBoolean(%s)", tc.fn)
+		assert.Equal(t, tc.want, isBoolean(src.pass, paramOf(t, src.file, tc.fn)), "isBoolean(%s)", tc.fn)
 	}
 }
 
@@ -90,14 +166,14 @@ func generic[T ~bool](ready T) {}
 // describing a different symbol that happens to share the name.
 func TestSweepScopeKeepsAFuncLitOutOfItsEnclosingDoc(t *testing.T) {
 	t.Parallel()
-	_, file := checked(t, `package p
+	src := checked(t, `package p
 // outer documents ready.
 func outer(ready bool) {
 	f := func(ready bool) {}
 	_ = f
 }
 `)
-	decl := file.Decls[0].(*ast.FuncDecl)
+	decl := src.file.Decls[0].(*ast.FuncDecl)
 
 	doc, lo, hi := sweepScope(decl)
 	require.NotNil(t, doc, "a func declaration contributes its doc comment")
@@ -131,38 +207,14 @@ func outer(ready bool) {
 // rather than by order.
 func TestFileOfFindsTheFileContainingAPosition(t *testing.T) {
 	t.Parallel()
-	pass, file := checked(t, `package p
+	src := checked(t, `package p
 func plain(ready bool) {}
 `)
-	ident := paramOf(t, file, "plain")
+	ident := paramOf(t, src.file, "plain")
 
-	assert.Same(t, file, fileOf(pass, ident.Pos()))
-	assert.Same(t, file, fileOf(pass, file.FileStart), "the first byte is inside the file")
-	assert.Same(t, file, fileOf(pass, file.FileEnd-1), "and so is the last")
-}
-
-// TestFixesForWithholdsAFixWhenTheNameIsNotRewritable names fixesFor's claims.
-// A diagnostic with no fix is the analyzer saying it sees the problem but
-// cannot rewrite it safely, and each case below is a way rewriting would break
-// the code: an exported name has references this pass cannot see, and a
-// proposed name that already exists in scope would collide with a different
-// symbol.
-func TestFixesForWithholdsAFixWhenTheNameIsNotRewritable(t *testing.T) {
-	t.Parallel()
-	pass, file := checked(t, `package p
-func exported(Ready bool) bool { return Ready }
-func collide(ready bool) bool { var isReady = ready; return isReady }
-func fine(ready bool) bool { return ready }
-`)
-
-	assert.Empty(t, fixesFor(pass, paramOf(t, file, "exported"), fixable(true)),
-		"an exported-looking name is outside the heuristic's lowercase domain")
-	assert.Empty(t, fixesFor(pass, paramOf(t, file, "collide"), fixable(true)),
-		"the proposed name is already taken in an enclosing or nested scope")
-	assert.Empty(t, fixesFor(pass, paramOf(t, file, "fine"), fixable(false)),
-		"a name marked unfixable carries no fix however clean it looks")
-	assert.NotEmpty(t, fixesFor(pass, paramOf(t, file, "fine"), fixable(true)),
-		"a rewritable name must actually get a fix, or the assertions above prove nothing")
+	assert.Same(t, src.file, fileOf(src.pass, ident.Pos()))
+	assert.Same(t, src.file, fileOf(src.pass, src.file.FileStart), "the first byte is inside the file")
+	assert.Same(t, src.file, fileOf(src.pass, src.file.FileEnd-1), "and so is the last")
 }
 
 // TestIsWordRejectsAMentionInsideALongerIdentifier names isWord's claim. The
