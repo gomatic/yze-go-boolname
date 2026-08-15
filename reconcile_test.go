@@ -5,8 +5,7 @@ package boolname
 // never do to earn that answer.
 
 import (
-	"go/ast"
-	"go/types"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -71,40 +70,6 @@ func inverted(g func(ix bool), ıx bool) bool { return ıx }
 	}
 }
 
-// resolution returns, for every identifier in text in source order, the
-// position in that same list of the identifier declaring what it resolves to,
-// or -1 for a declaration and for anything declared outside the file. It is
-// invariant under renaming — spellings and columns move, the shape does not —
-// so comparing it across a rewrite asks the one question the type checker will
-// not: does everything still mean what it meant?
-func resolution(t *testing.T, text string) []int {
-	t.Helper()
-	built := checked(t, text)
-
-	var idents []*ast.Ident
-	ast.Inspect(built.file, func(n ast.Node) bool {
-		if id, ok := n.(*ast.Ident); ok {
-			idents = append(idents, id)
-		}
-		return true
-	})
-	declaredAt := map[types.Object]int{}
-	for at, id := range idents {
-		if obj := built.pass.TypesInfo.Defs[id]; obj != nil {
-			declaredAt[obj] = at
-		}
-	}
-	resolved := make([]int, len(idents))
-	for at, id := range idents {
-		declared, isKnown := declaredAt[built.pass.TypesInfo.Uses[id]]
-		if !isKnown {
-			declared = -1
-		}
-		resolved[at] = declared
-	}
-	return resolved
-}
-
 // TestNoFixChangesWhatAnIdentifierResolvesTo names the promise no compile check
 // can express, and the reason a nested contender may ever be withdrawn at all.
 // Capturing a reference produces source that BUILDS: rename both halves of
@@ -158,5 +123,148 @@ func fb(g func(sx bool), ſx bool) bool { _ = g; return ſx }
 			t.Parallel()
 			assert.Equal(t, resolution(t, tc.src), resolution(t, analyzed(t, tc.src).applied()), tc.why)
 		})
+	}
+}
+
+// TestCaptureIsSeenAtEveryScopeDistance names the dimension every other case in
+// this package holds constant. All of them put the nested signature one scope
+// below the enclosing one, so nothing here could tell encloses' walk up the
+// whole scope chain from a walk that looked only at the immediate parent —
+// which is a live rewrite of the constant-false bug this file exists to
+// prevent, and one the gate passes at full coverage. Each placement below sits
+// the nested signature a different distance down: a bare block and a func
+// literal are two scopes away, a statement that opens a scope for its own
+// header is three, and a composite literal element is one, the same as no
+// placement at all.
+//
+// Both directions run at every distance, because the distance is not itself the
+// danger: the capturing variant must leave the nested name reported forever,
+// and the variant that reads nothing outside must rename both and settle.
+func TestCaptureIsSeenAtEveryScopeDistance(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, src string }{
+		{name: "noPlacement", src: `package p
+func f(ix bool) bool {
+	inner := func(ıx bool) bool { return ıx%s }
+	return inner(ix)
+}
+`},
+		{name: "compositeLiteralElement", src: `package p
+func f(ix bool) bool {
+	fns := []func(bool) bool{
+		func(ıx bool) bool { return ıx%s },
+	}
+	return fns[0](ix)
+}
+`},
+		{name: "bareBlock", src: `package p
+func f(ix bool) bool {
+	{
+		inner := func(ıx bool) bool { return ıx%s }
+		return inner(ix)
+	}
+}
+`},
+		{name: "deferredLiteral", src: `package p
+func f(ix bool) bool {
+	defer func() {
+		inner := func(ıx bool) bool { return ıx%s }
+		_ = inner(ix)
+	}()
+	return ix
+}
+`},
+		{name: "selectCase", src: `package p
+func f(ix bool) bool {
+	ch := make(chan bool, 1)
+	ch <- ix
+	select {
+	case <-ch:
+		inner := func(ıx bool) bool { return ıx%s }
+		return inner(ix)
+	}
+}
+`},
+		{name: "threeSignaturesDeep", src: `package p
+func f(ix bool) bool {
+	mid := func(kx bool) bool {
+		deep := func(ıx bool) bool { return ıx%s }
+		return deep(kx)
+	}
+	return mid(ix)
+}
+`},
+		{name: "ifBody", src: `package p
+func f(ix bool) bool {
+	if ix {
+		inner := func(ıx bool) bool { return ıx%s }
+		return inner(ix)
+	}
+	return ix
+}
+`},
+		{name: "forBody", src: `package p
+func f(ix bool) bool {
+	for ix {
+		inner := func(ıx bool) bool { return ıx%s }
+		return inner(ix)
+	}
+	return ix
+}
+`},
+		{name: "labelledForBody", src: `package p
+func f(ix bool) bool {
+loop:
+	for ix {
+		inner := func(ıx bool) bool { return ıx%s }
+		if inner(ix) {
+			break loop
+		}
+	}
+	return ix
+}
+`},
+		{name: "switchCase", src: `package p
+func f(ix bool) bool {
+	switch {
+	case ix:
+		inner := func(ıx bool) bool { return ıx%s }
+		return inner(ix)
+	}
+	return ix
+}
+`},
+		{name: "typeSwitchCase", src: `package p
+func f(ix bool, v any) bool {
+	switch v.(type) {
+	case int:
+		inner := func(ıx bool) bool { return ıx%s }
+		return inner(ix)
+	}
+	return ix
+}
+`},
+	} {
+		for _, read := range []struct {
+			name       string
+			suffix     string
+			why        string
+			isCaptured bool
+		}{
+			{name: "capturing", suffix: " && !ix", isCaptured: true, why: "the nested body reads the enclosing ix, so one identifier for both would rebind that read however far apart the two scopes sit"},
+			{name: "free", suffix: "", isCaptured: false, why: "the nested body reads nothing from the enclosing signature, so the distance between the scopes is not on its own a reason to strand the name"},
+		} {
+			t.Run(tc.name+"-"+read.name, func(t *testing.T) {
+				t.Parallel()
+				src := fmt.Sprintf(tc.src, read.suffix)
+				once := analyzed(t, src).applied()
+
+				assert.NoError(t, compile(once).err, "%s", read.why)
+				assert.Equal(t, resolution(t, src), resolution(t, once), "%s", read.why)
+				assert.Equal(t, read.isCaptured, len(analyzed(t, once).diagnostics) != 0,
+					"whatever is still reported here is reported on every run forever: %s", read.why)
+			})
+		}
 	}
 }

@@ -28,13 +28,13 @@ func fine(ready bool) bool { return ready }
 `)
 	proposalOf := func(fn string, isFixable fixable) identName {
 		name := paramOf(t, src.file, fn)
-		return proposalFor(name, src.pass.TypesInfo.Defs[name], isFixable)
+		return proposalFor(src.pass, name, src.pass.TypesInfo.Defs[name], isFixable)
 	}
 
 	assert.Empty(t, proposalOf("exported", fixable(true)),
 		"an exported-looking name is outside the heuristic's lowercase domain")
 	assert.Empty(t, proposalOf("collide", fixable(true)),
-		"the proposed name is already taken in an enclosing or nested scope")
+		"the local isReady is read where the renamed parameter would shadow it")
 	assert.Empty(t, proposalOf("underscore", fixable(true)),
 		"is_verbose has no word boundary after the prefix, so the rule rejects it")
 	assert.Empty(t, proposalOf("caseless", fixable(true)),

@@ -8,123 +8,12 @@ package boolname
 
 import (
 	"go/ast"
-	"go/importer"
-	"go/parser"
 	"go/token"
-	"go/types"
-	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/tools/go/analysis"
-	"golang.org/x/tools/go/analysis/passes/inspect"
-	"golang.org/x/tools/go/ast/inspector"
 )
-
-// source is a single-file package parsed and type-checked in memory, together
-// with whatever the analyzer reported over it.
-type source struct {
-	fset        *token.FileSet
-	file        *ast.File
-	pass        *analysis.Pass
-	err         error
-	text        string
-	diagnostics []analysis.Diagnostic
-}
-
-// compile parses and type-checks text as a one-file package. err is nil exactly
-// when the Go type checker accepts the text, so a rewritten source that fails
-// to build fails here, with the same message the compiler gives.
-func compile(text string) *source {
-	built := &source{text: text, fset: token.NewFileSet()}
-	file, err := parser.ParseFile(built.fset, "p.go", text, parser.ParseComments)
-	if err != nil {
-		built.err = err
-		return built
-	}
-	built.file = file
-
-	info := &types.Info{
-		Defs:  map[*ast.Ident]types.Object{},
-		Uses:  map[*ast.Ident]types.Object{},
-		Types: map[ast.Expr]types.TypeAndValue{},
-	}
-	conf := types.Config{Importer: importer.Default()}
-	pkg, err := conf.Check("example.test/p", built.fset, []*ast.File{file}, info)
-	built.err = err
-	built.pass = &analysis.Pass{
-		Fset:      built.fset,
-		Files:     []*ast.File{file},
-		Pkg:       pkg,
-		TypesInfo: info,
-		ResultOf:  map[*analysis.Analyzer]any{inspect.Analyzer: inspector.New([]*ast.File{file})},
-		Report:    func(d analysis.Diagnostic) { built.diagnostics = append(built.diagnostics, d) },
-	}
-	return built
-}
-
-// checked is compile plus the requirement that the text itself builds, which
-// every fixture must before anything is asserted about rewriting it.
-func checked(t *testing.T, text string) *source {
-	t.Helper()
-	built := compile(text)
-	require.NoError(t, built.err)
-	return built
-}
-
-// analyzed is checked plus a run of the analyzer, so diagnostics is populated.
-func analyzed(t *testing.T, text string) *source {
-	t.Helper()
-	built := checked(t, text)
-	_, err := run(built.pass)
-	require.NoError(t, err)
-	return built
-}
-
-// applied returns the text with every edit of every suggested fix spliced in,
-// which is what the `-fix` driver does. Edits are applied from the end so an
-// earlier offset is never disturbed by a later replacement.
-func (s *source) applied() string {
-	var edits []analysis.TextEdit
-	for _, diagnostic := range s.diagnostics {
-		for _, fix := range diagnostic.SuggestedFixes {
-			edits = append(edits, fix.TextEdits...)
-		}
-	}
-	slices.SortFunc(edits, func(a, b analysis.TextEdit) int { return int(b.Pos - a.Pos) })
-	text := s.text
-	for _, edit := range edits {
-		at, to := s.fset.Position(edit.Pos).Offset, s.fset.Position(edit.End).Offset
-		text = text[:at] + string(edit.NewText) + text[to:]
-	}
-	return text
-}
-
-// proposals returns the name each fix would introduce, read back out of the
-// rewritten declaration rather than out of the fix's own message.
-func (s *source) proposals() []identName {
-	var proposed []identName
-	for _, diagnostic := range s.diagnostics {
-		for _, fix := range diagnostic.SuggestedFixes {
-			proposed = append(proposed, identName(fix.TextEdits[0].NewText))
-		}
-	}
-	return proposed
-}
-
-// paramOf returns the first parameter identifier of the named function.
-func paramOf(t *testing.T, file *ast.File, fn string) *ast.Ident {
-	t.Helper()
-	for _, decl := range file.Decls {
-		d, ok := decl.(*ast.FuncDecl)
-		if ok && d.Name.Name == fn {
-			return d.Type.Params.List[0].Names[0]
-		}
-	}
-	t.Fatalf("no func %s", fn)
-	return nil
-}
 
 // TestIsBooleanUnwrapsExactlyOnePointerLevel names isBoolean's claim. The
 // analyzer only renames boolean-typed names, so this predicate decides whether

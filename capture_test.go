@@ -6,56 +6,25 @@ package boolname
 // on anything but that read.
 
 import (
-	"fmt"
-	"go/ast"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// contenders builds the fixture both predicates below are judged on and returns
-// a lookup from a parameter name to its declarations, in source order.
-func contenders(t *testing.T) (*source, func(string) []candidate) {
-	t.Helper()
-	src := checked(t, `package p
-func siblings(ax bool, bx bool) {}
-func captured(ix bool) bool {
-	inner := func(iy bool) bool { return iy && ix }
-	return inner(ix)
-}
-func free(px bool) bool {
-	inner := func(py bool) bool { return py }
-	return inner(px)
-}
-func shadowing(ready bool) bool {
-	inner := func(ready bool) bool { return ready }
-	return inner(ready)
-}
-func bodyless(g func(sx bool), tx bool) bool { return tx }
-func apart(distinct bool) bool { return distinct }
-`)
-	return src, func(param string) []candidate {
-		var found []candidate
-		ast.Inspect(src.file, func(n ast.Node) bool {
-			id, ok := n.(*ast.Ident)
-			if ok && id.Name == param && src.pass.TypesInfo.Defs[id] != nil {
-				found = append(found, candidate{name: id, obj: src.pass.TypesInfo.Defs[id]})
-			}
-			return true
-		})
-		require.NotEmpty(t, found, "no declaration of %s", param)
-		return found
-	}
-}
-
 // TestCapturesSeesOnlyAReadInsideTheNestedScope names captures' claim, which is
 // the whole discriminator and which neither the compiler nor a golden file can
-// check — a capture BUILDS. Two claims are pinned here. It counts READS, not
-// every identifier the rename rewrites: an enclosing declaration always sits
-// inside its own scope, so counting declarations would make every pair capture.
-// And it is DIRECTIONAL: only the enclosing declaration is the one shadowed, so
-// the same pair handed the other way round captures nothing.
+// check — a capture BUILDS. What is pinned here is that it is DIRECTIONAL: only
+// the enclosing declaration is the one shadowed, so the same pair handed the
+// other way round captures nothing.
+//
+// An earlier revision of this comment claimed a second thing — that counting
+// declarations as well as reads would make every pair capture — and that was
+// false for this code and provable in one line: the only ident it would add is
+// the outer's own declaration, which lies outside every strictly-nested extent.
+// The reads-not-declarations narrowing is readsWithin's, and it is stated and
+// cased there, where the one region that can hold a symbol's own declaration
+// is reachable.
 func TestCapturesSeesOnlyAReadInsideTheNestedScope(t *testing.T) {
 	t.Parallel()
 	src, declarations := contenders(t)
@@ -116,145 +85,186 @@ func TestContendsAnswersTheSameBothWays(t *testing.T) {
 	}
 }
 
-// TestCaptureIsSeenAtEveryScopeDistance names the dimension every other case in
-// this package holds constant. All of them put the nested signature one scope
-// below the enclosing one, so nothing here could tell encloses' walk up the
-// whole scope chain from a walk that looked only at the immediate parent —
-// which is a live rewrite of the constant-false bug this file exists to
-// prevent, and one the gate passes at full coverage. Each placement below sits
-// the nested signature a different distance down: a bare block and a func
-// literal are two scopes away, a statement that opens a scope for its own
-// header is three, and a composite literal element is one, the same as no
-// placement at all.
-//
-// Both directions run at every distance, because the distance is not itself the
-// danger: the capturing variant must leave the nested name reported forever,
-// and the variant that reads nothing outside must rename both and settle.
-func TestCaptureIsSeenAtEveryScopeDistance(t *testing.T) {
+// TestReadsWithinCountsReadsAndNotDeclarations names readsWithin's claim, which
+// is the primitive every shadowing decision in this file is built out of. A
+// shadow rebinds the READS sitting under it; a declaration is what the shadow
+// is measured against, not something it moves. The third case is the one that
+// separates the two: ax is declared in the scope it is asked about and read
+// nowhere at all, so there is nothing under a shadow there to rebind, and
+// counting its declaration would say otherwise.
+func TestReadsWithinCountsReadsAndNotDeclarations(t *testing.T) {
 	t.Parallel()
+	src, declarations := contenders(t)
+	only := func(param string) candidate { return declarations(param)[0] }
 
-	for _, tc := range []struct{ name, src string }{
-		{name: "noPlacement", src: `package p
-func f(ix bool) bool {
-	inner := func(ıx bool) bool { return ıx%s }
-	return inner(ix)
+	assert.True(t, readsWithin(src.pass, only("ix").obj, only("iy").obj.Parent()),
+		"the nested body reads ix, and that read is exactly what a shadow there would rebind")
+	assert.False(t, readsWithin(src.pass, only("px").obj, only("py").obj.Parent()),
+		"the nested body reads nothing of px, so a shadow over it moves nothing")
+	assert.False(t, readsWithin(src.pass, only("ax").obj, only("ax").obj.Parent()),
+		"ax is declared in that scope and read nowhere, and a declaration is never a read")
 }
-`},
-		{name: "compositeLiteralElement", src: `package p
-func f(ix bool) bool {
-	fns := []func(bool) bool{
-		func(ıx bool) bool { return ıx%s },
+
+// TestShadowsAReadAboveRefusesOnlyWhereTheShadowedNameIsRead names the first
+// half of collides. A symbol declared outside the candidate's scope is shadowed
+// by the rename throughout that scope, so the refusal is owed exactly where
+// something in there reads it — and nowhere else, because ordinary shadowing is
+// legal Go that moves nothing while the refusal it earns is permanent: the name
+// is reported on every run forever and no later run offers a fix.
+func TestShadowsAReadAboveRefusesOnlyWhereTheShadowedNameIsRead(t *testing.T) {
+	t.Parallel()
+	settles(t, []shape{
+		{
+			name:      "sameScope",
+			isSettled: false,
+			why:       "one scope cannot hold isReady twice, and no fact about reads makes that legal",
+			src: `package p
+func f(ready bool) bool { var isReady = ready; return isReady }
+`,
+		},
+		{
+			name:      "unreadNameAbove",
+			isSettled: true,
+			why:       "nothing inside the literal reads the enclosing isReady, so shadowing it rebinds nothing",
+			src: `package p
+func f(isReady bool) bool { inner := func(ready bool) bool { return ready }; return inner(isReady) }
+`,
+		},
+		{
+			name:      "readNameAbove",
+			isSettled: false,
+			why:       "the literal reads the enclosing isReady, which the rename would rebind to the literal's own parameter",
+			src: `package p
+func f(isReady bool) bool { inner := func(ready bool) bool { return ready && isReady }; return inner(isReady) }
+`,
+		},
+		{
+			name:      "unreadPackageName",
+			isSettled: true,
+			why:       "a package-level isReady no body reads is shadowed by the rename and read by nothing the shadow covers",
+			src: `package p
+var isReady = false
+func f(ready bool) bool { return ready }
+`,
+		},
+		{
+			name:      "readPackageName",
+			isSettled: false,
+			why:       "the body reads the package-level isReady, so the rename would rebind it to the parameter",
+			src: `package p
+var isReady = false
+func f(ready bool) bool { return ready && isReady }
+`,
+		},
+		{
+			name:      "innermostNameAbove",
+			isSettled: false,
+			why:       "a local isReady stands between the literal and the package one, and it is the local the literal's read resolves to, so it is the local whose reads decide",
+			src: `package p
+var isReady = false
+func f(seen bool) bool {
+	isReady := true
+	inner := func(ready bool) bool { return ready && isReady }
+	return inner(seen)
+}
+`,
+		},
+	})
+}
+
+// TestShadowedByAReadBelowRefusesOnlyWhereTheRenameLandsUnderAShadow names the
+// other half. Here the shadowing declaration is already in the source and the
+// rename walks under it, so what is captured is a read of the CANDIDATE sitting
+// inside that nested scope. The walk covers the whole subtree, and the cases
+// below sit the declaration one, two and three scopes down, because a bound
+// anywhere in that recursion answers the shallowest case identically and
+// silently rewrites everything deeper.
+func TestShadowedByAReadBelowRefusesOnlyWhereTheRenameLandsUnderAShadow(t *testing.T) {
+	t.Parallel()
+	settles(t, []shape{
+		{
+			name:      "unreadNameBelow",
+			isSettled: true,
+			why:       "the literal declares isReady already and reads nothing of the enclosing signature, so the rename lands under a shadow that covers nothing",
+			src: `package p
+func f(ready bool) bool { inner := func(isReady bool) bool { return isReady }; return inner(ready) }
+`,
+		},
+		{
+			name:      "readNameBelow",
+			isSettled: false,
+			why:       "the literal reads the enclosing ready, which its own isReady captures the moment the rename lands",
+			src: `package p
+func f(ready bool) bool { inner := func(isReady bool) bool { return isReady && ready }; return inner(ready) }
+`,
+		},
+		{
+			name:      "unreadLocalBelow",
+			isSettled: true,
+			why:       "a short variable declaration in a block shadows the renamed parameter there and reads nothing of it, which is the shape the corpus refused for four commits",
+			src: `package p
+func f(ready bool) bool {
+	if ready {
+		isReady := true
+		return isReady
 	}
-	return fns[0](ix)
+	return ready
 }
-`},
-		{name: "bareBlock", src: `package p
-func f(ix bool) bool {
+`,
+		},
+		{
+			name:      "readLocalBelow",
+			isSettled: false,
+			why:       "the same block reads the parameter after declaring isReady, so the rename would put that read under the local one",
+			src: `package p
+func f(ready bool) bool {
+	if ready {
+		isReady := true
+		return isReady && ready
+	}
+	return ready
+}
+`,
+		},
+		{
+			name:      "readNameTwoScopesBelow",
+			isSettled: false,
+			why:       "a bare block puts the shadowing declaration two scopes down, where a walk over the immediate children alone would not find it",
+			src: `package p
+func f(ready bool) bool {
 	{
-		inner := func(ıx bool) bool { return ıx%s }
-		return inner(ix)
+		inner := func(isReady bool) bool { return isReady && ready }
+		return inner(ready)
 	}
 }
-`},
-		{name: "deferredLiteral", src: `package p
-func f(ix bool) bool {
-	defer func() {
-		inner := func(ıx bool) bool { return ıx%s }
-		_ = inner(ix)
-	}()
-	return ix
-}
-`},
-		{name: "selectCase", src: `package p
-func f(ix bool) bool {
-	ch := make(chan bool, 1)
-	ch <- ix
-	select {
-	case <-ch:
-		inner := func(ıx bool) bool { return ıx%s }
-		return inner(ix)
+`,
+		},
+		{
+			name:      "unreadNameTwoScopesBelow",
+			isSettled: true,
+			why:       "the same distance in the direction where nothing is captured, so the distance is not itself the refusal",
+			src: `package p
+func f(ready bool) bool {
+	{
+		inner := func(isReady bool) bool { return isReady }
+		return inner(ready)
 	}
 }
-`},
-		{name: "threeSignaturesDeep", src: `package p
-func f(ix bool) bool {
-	mid := func(kx bool) bool {
-		deep := func(ıx bool) bool { return ıx%s }
-		return deep(kx)
+`,
+		},
+		{
+			name:      "readNameThreeScopesBelow",
+			isSettled: false,
+			why:       "an if opens a scope for its header as well as its body, so the shadowing declaration sits deeper again",
+			src: `package p
+func f(ready bool) bool {
+	if ready {
+		inner := func(isReady bool) bool { return isReady && ready }
+		return inner(ready)
 	}
-	return mid(ix)
+	return ready
 }
-`},
-		{name: "ifBody", src: `package p
-func f(ix bool) bool {
-	if ix {
-		inner := func(ıx bool) bool { return ıx%s }
-		return inner(ix)
-	}
-	return ix
-}
-`},
-		{name: "forBody", src: `package p
-func f(ix bool) bool {
-	for ix {
-		inner := func(ıx bool) bool { return ıx%s }
-		return inner(ix)
-	}
-	return ix
-}
-`},
-		{name: "labelledForBody", src: `package p
-func f(ix bool) bool {
-loop:
-	for ix {
-		inner := func(ıx bool) bool { return ıx%s }
-		if inner(ix) {
-			break loop
-		}
-	}
-	return ix
-}
-`},
-		{name: "switchCase", src: `package p
-func f(ix bool) bool {
-	switch {
-	case ix:
-		inner := func(ıx bool) bool { return ıx%s }
-		return inner(ix)
-	}
-	return ix
-}
-`},
-		{name: "typeSwitchCase", src: `package p
-func f(ix bool, v any) bool {
-	switch v.(type) {
-	case int:
-		inner := func(ıx bool) bool { return ıx%s }
-		return inner(ix)
-	}
-	return ix
-}
-`},
-	} {
-		for _, read := range []struct {
-			name       string
-			suffix     string
-			why        string
-			isCaptured bool
-		}{
-			{name: "capturing", suffix: " && !ix", isCaptured: true, why: "the nested body reads the enclosing ix, so one identifier for both would rebind that read however far apart the two scopes sit"},
-			{name: "free", suffix: "", isCaptured: false, why: "the nested body reads nothing from the enclosing signature, so the distance between the scopes is not on its own a reason to strand the name"},
-		} {
-			t.Run(tc.name+"-"+read.name, func(t *testing.T) {
-				t.Parallel()
-				src := fmt.Sprintf(tc.src, read.suffix)
-				once := analyzed(t, src).applied()
-
-				assert.NoError(t, compile(once).err, "%s", read.why)
-				assert.Equal(t, resolution(t, src), resolution(t, once), "%s", read.why)
-				assert.Equal(t, read.isCaptured, len(analyzed(t, once).diagnostics) != 0,
-					"whatever is still reported here is reported on every run forever: %s", read.why)
-			})
-		}
-	}
+`,
+		},
+	})
 }

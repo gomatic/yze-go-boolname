@@ -109,7 +109,7 @@ func candidateFor(pass *analysis.Pass, name *ast.Ident, isFixable fixable) (cand
 		return candidate{}, false
 	}
 	obj := pass.TypesInfo.Defs[name]
-	return candidate{name: name, obj: obj, proposed: proposalFor(name, obj, isFixable)}, true
+	return candidate{name: name, obj: obj, proposed: proposalFor(pass, name, obj, isFixable)}, true
 }
 
 // diagnostic is the report for an ill-named boolean, carrying the rename fix

@@ -6,13 +6,18 @@ import (
 	"go/types"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/tools/go/analysis"
 )
 
 // Deciding what to rename an ill-named boolean to. Nothing here edits source,
 // and nothing here can see the other names the same pass is about to propose —
 // that is reconcile.go's job. Every contract in this file is about whether a
-// name is free of the code AS IT STANDS: free of the symbols already in scope,
-// and free of the rule that would report the proposal all over again.
+// name is free of the code AS IT STANDS: free of the reads a shadow would
+// rebind, and free of the rule that would report the proposal all over again.
+// Free of the symbols already in scope is NOT the test and never was — Go lets
+// a declaration shadow one, and treating that as a collision withholds a fix
+// permanently for source that would have been correct.
 
 // candidate is an ill-named boolean the analyzer will report, paired with the
 // rename it offers. An empty proposal is the analyzer saying it sees the
@@ -33,18 +38,18 @@ type candidate struct {
 //
 // Three things withhold the proposal. An exported-looking name is outside the
 // heuristic's lowercase domain and has references this pass cannot see. A name
-// already visible in, enclosing, or nested within the signature scope is a
-// collision. And a proposal the rule itself would report again is no proposal
+// whose shadowing would capture a read is a collision, which capture.go
+// decides. And a proposal the rule itself would report again is no proposal
 // at all: a first rune with no upper case — an underscore, or a caseless script
 // such as Han — leaves the prefix without the word boundary the rule requires,
 // so "is_verbose" and "is有効" are reported the moment they are written and grow
 // another "is" on every subsequent run.
-func proposalFor(name *ast.Ident, obj types.Object, isFixable fixable) identName {
+func proposalFor(pass *analysis.Pass, name *ast.Ident, obj types.Object, isFixable fixable) identName {
 	if !bool(isFixable) || token.IsExported(name.Name) {
 		return ""
 	}
 	proposed := identName("is" + upperFirst(identName(name.Name)))
-	if !wellNamed(proposed) || collides(obj.Parent(), proposed) {
+	if !wellNamed(proposed) || collides(pass, obj, proposed) {
 		return ""
 	}
 	return proposed
@@ -58,26 +63,4 @@ type identName string
 func upperFirst(name identName) string {
 	r, size := utf8.DecodeRuneInString(string(name))
 	return string(unicode.ToUpper(r)) + string(name)[size:]
-}
-
-// collides reports whether proposed is already declared in the signature scope
-// or any scope enclosing it (function-body locals share the signature scope;
-// file and package scopes enclose it), or in any scope nested within it, where
-// the renamed identifier would be shadowed.
-func collides(scope *types.Scope, proposed identName) bool {
-	if _, obj := scope.LookupParent(string(proposed), token.NoPos); obj != nil {
-		return true
-	}
-	return declaredWithin(scope, proposed)
-}
-
-// declaredWithin reports whether name is declared in any scope nested below scope.
-func declaredWithin(scope *types.Scope, name identName) bool {
-	for i := range scope.NumChildren() {
-		child := scope.Child(i)
-		if child.Lookup(string(name)) != nil || declaredWithin(child, name) {
-			return true
-		}
-	}
-	return false
 }

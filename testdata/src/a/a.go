@@ -83,16 +83,34 @@ func packageCollision(
 	return cached && isCached
 }
 
-// nestedCollision exercises the nested-scope collision guard: ok's proposed name
-// isOk is declared inside a nested block, where the rename would be shadowed.
+// nestedCollision exercises the nested-scope collision guard where the refusal
+// is real: the block declaring isOk also READS the parameter, so the rename
+// would put that read under the local declaration and rebind it — source that
+// still compiles and means something else. No fix is offered.
 func nestedCollision(
 	ok bool, // want `boolean ok should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
 ) bool {
 	if ok {
 		isOk := true
-		return isOk
+		return isOk && ok
 	}
 	return ok
+}
+
+// nestedShadow exercises the same guard in the direction where the shadowing
+// captures nothing, which is the direction it used to refuse anyway. The block
+// declares isReady and reads nothing of the parameter, so the renamed parameter
+// is merely shadowed inside that block — legal Go that moves nothing — and
+// withholding the fix there strands the name forever, since no later run finds
+// the source any different.
+func nestedShadow(
+	ready bool, // want `boolean r.ady should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+) bool {
+	if ready {
+		isReady := true
+		return isReady
+	}
+	return ready
 }
 
 // naked exercises a named result referenced by assignment and a naked return:
