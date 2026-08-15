@@ -2,7 +2,6 @@ package boolname
 
 import (
 	"go/ast"
-	"go/token"
 	"go/types"
 
 	"golang.org/x/tools/go/analysis"
@@ -11,10 +10,11 @@ import (
 // Deciding whether giving one identifier to two symbols would change what
 // something READS. Every question here is about a pair of scopes and the
 // references between them, and none of them is answerable by the type checker:
-// a capture BUILDS, which is the whole difficulty. reconcile.go asks it of two
-// names the same pass is about to introduce; propose.go asks it of one name
-// against a symbol the source already declares. It is ONE question, and the two
-// callers got different answers to it for as long as they each had their own.
+// a capture BUILDS, which is the whole difficulty. readsWithin is that question
+// and it is asked twice: here, of two names the same pass is about to
+// introduce, and in collide.go, of one name against a symbol the source already
+// declares. It is ONE question, and the two callers got different answers to it
+// for as long as they each had their own.
 
 // contends reports whether two candidates proposing one identifier may not both
 // take it. In ONE scope they may not, ever: that is "redeclared in this block",
@@ -61,55 +61,6 @@ func captures(pass *analysis.Pass, outer, inner candidate) bool {
 func encloses(outer, inner *types.Scope) bool {
 	for scope := inner; scope != nil; scope = scope.Parent() {
 		if scope == outer {
-			return true
-		}
-	}
-	return false
-}
-
-// collides reports whether proposed may not be given to obj. Two ways it may
-// not, and only two. obj's OWN scope already declares it: that is "redeclared
-// in this block", it does not compile, and no fact about reads makes it legal.
-// Or giving obj the identifier would shadow a declaration whose reads the
-// shadow would rebind — either a symbol above obj that something inside obj's
-// scope reads, or a declaration below obj that sits over a read of obj.
-//
-// Anything else is ordinary shadowing, which Go permits and which moves
-// nothing, and refusing it is not caution: the analyzer reports the name on
-// every run forever and offers no other fix, so a refusal here is permanent.
-// `func f(isReady bool) { g := func(ready bool) bool { return ready } }` is the
-// shape that made this worth separating — the identifier is taken, the literal
-// reads nothing of the enclosing one, and the rename it was refused builds,
-// vets clean and reports nothing.
-func collides(pass *analysis.Pass, obj types.Object, proposed identName) bool {
-	scope := obj.Parent()
-	return scope.Lookup(string(proposed)) != nil ||
-		shadowsAReadAbove(pass, scope, proposed) ||
-		shadowedByAReadBelow(pass, obj, scope, proposed)
-}
-
-// shadowsAReadAbove reports whether proposed names a symbol declared outside
-// scope — an enclosing function, the file, the package — that something inside
-// scope reads. Declaring proposed in scope shadows that symbol throughout it,
-// so exactly those reads change meaning. LookupParent takes the INNERMOST such
-// declaration, which is the one a read there resolves to today.
-func shadowsAReadAbove(pass *analysis.Pass, scope *types.Scope, proposed identName) bool {
-	_, shadowed := scope.LookupParent(string(proposed), token.NoPos)
-	return shadowed != nil && readsWithin(pass, shadowed, scope)
-}
-
-// shadowedByAReadBelow reports whether any scope nested below scope declares
-// proposed while holding a read of obj. There the shadow runs the other way:
-// the nested declaration is already in place, and the rename walks under it, so
-// the reads of obj sitting inside that nested scope are the ones it captures.
-// The walk is the whole subtree because the declaration may sit at any depth —
-// a block, a loop body or a further literal — and a shape one level deeper than
-// wherever a bound was put is a shape the bound silently rewrites.
-func shadowedByAReadBelow(pass *analysis.Pass, obj types.Object, scope *types.Scope, proposed identName) bool {
-	for i := range scope.NumChildren() {
-		child := scope.Child(i)
-		if (child.Lookup(string(proposed)) != nil && readsWithin(pass, obj, child)) ||
-			shadowedByAReadBelow(pass, obj, child, proposed) {
 			return true
 		}
 	}
