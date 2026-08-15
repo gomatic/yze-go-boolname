@@ -41,13 +41,11 @@ func fixesFor(pass *analysis.Pass, c candidate) []analysis.SuggestedFix {
 // Signature names are only referenceable from their own signature and body, so
 // the declaring file contains every ident that resolves to obj.
 func renameEdits(pass *analysis.Pass, obj types.Object, proposed identName) []analysis.TextEdit {
-	var edits []analysis.TextEdit
-	ast.Inspect(fileOf(pass, obj.Pos()), func(n ast.Node) bool {
-		if id, ok := n.(*ast.Ident); ok && resolvesTo(pass, id, obj) {
-			edits = append(edits, analysis.TextEdit{Pos: id.Pos(), End: id.End(), NewText: []byte(string(proposed))})
-		}
-		return true
-	})
+	references := referencesTo(pass, obj)
+	edits := make([]analysis.TextEdit, 0, len(references))
+	for _, id := range references {
+		edits = append(edits, analysis.TextEdit{Pos: id.Pos(), End: id.End(), NewText: []byte(string(proposed))})
+	}
 	return edits
 }
 

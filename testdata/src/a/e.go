@@ -42,3 +42,48 @@ func caselessScript(
 ) bool {
 	return 有効
 }
+
+// nestedShadowing exercises the nested withdrawal in the direction where
+// capture is IMPOSSIBLE: the literal's parameter already shadows the enclosing
+// one, so nothing inside the literal ever resolved to the enclosing object and
+// renaming both is exact. Withdrawing on nesting alone strands the inner name
+// forever — no later run renames it either, because by then the enclosing name
+// is declared and the scope lookup refuses to shadow it.
+func nestedShadowing(
+	quiet bool, // want `boolean qu.et should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+) bool {
+	inner := func(
+		quiet bool, // want `boolean qu.et should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+	) bool {
+		return quiet
+	}
+	return inner(quiet)
+}
+
+// nestedCapture exercises the same withdrawal in the direction where capture is
+// REAL: the literal's body reads the enclosing name, so one identifier for both
+// would rebind that read to the literal's own parameter — source that compiles,
+// vets clean and means something else. The enclosing name is still renamed; the
+// nested one is reported and not rewritten.
+func nestedCapture(
+	sober bool, // want `boolean .ober should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+) bool {
+	inner := func(
+		ſober bool, // want `boolean .ober should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+	) bool {
+		return ſober && !sober
+	}
+	return inner(sober)
+}
+
+// bodylessNested exercises a nested signature with no body at all: a func-type
+// parameter's own parameter name has no references anywhere, so it can capture
+// nothing and both names rename. The enclosing signature is visited first, so
+// it is the earlier claimant although its name comes second in the line.
+func bodylessNested(
+	g func(sunk bool), // want `boolean s.nk should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+	ſunk bool, // want `boolean ſ.nk should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+) bool {
+	_ = g
+	return ſunk
+}

@@ -21,6 +21,22 @@ func resolvesTo(pass *analysis.Pass, id *ast.Ident, obj types.Object) bool {
 	return pass.TypesInfo.Defs[id] == obj || pass.TypesInfo.Uses[id] == obj
 }
 
+// referencesTo returns every identifier that declares or references obj, in
+// source order. This is exactly the set a rename rewrites, which is why both
+// halves of the analyzer read it: the fix rewrites them, and the proposal asks
+// where they land. Signature names are referenceable only from their own
+// signature and body, so obj's own file holds all of them.
+func referencesTo(pass *analysis.Pass, obj types.Object) []*ast.Ident {
+	var found []*ast.Ident
+	ast.Inspect(fileOf(pass, obj.Pos()), func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && resolvesTo(pass, id, obj) {
+			found = append(found, id)
+		}
+		return true
+	})
+	return found
+}
+
 // fileOf returns the file containing pos. Every reported ident comes from a
 // file in pass.Files, so the lookup always succeeds.
 func fileOf(pass *analysis.Pass, pos token.Pos) *ast.File {

@@ -1,12 +1,9 @@
 package boolname
 
-// White-box tests for what the analyzer proposes. Every contract here is about
-// a name being FREE: of the scope, of the other names the same pass proposes,
-// and of the rule that would report the proposal again.
+// White-box tests for what the analyzer proposes for ONE name, against the code
+// as it stands. Whether two proposals may coexist is reconcile_test.go's.
 
 import (
-	"go/ast"
-	"go/types"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -48,87 +45,18 @@ func fine(ready bool) bool { return ready }
 		"a rewritable name must actually get its rename, or the assertions above prove nothing")
 }
 
-// TestReconciledLetsTheFirstClaimantKeepTheName names reconciled's claim. Two
-// candidates proposing one identifier is the defect this pass exists to catch,
-// and which of them keeps it must be settled the same way on every run. It is
-// settled by the order the traversal reaches them, which is NOT source order —
-// an enclosing signature is visited before one nested inside it, so the last
-// case below has the textually later name winning. A nested signature contends
-// at all because the analyzer refuses to shadow a name that already exists, so
-// it refuses to shadow one it is about to introduce.
-func TestReconciledLetsTheFirstClaimantKeepTheName(t *testing.T) {
-	t.Parallel()
-	src := analyzed(t, `package p
-func siblings(ix bool, ıx bool) bool { return ix && ıx }
-func nested(ix bool) bool {
-	inner := func(ıx bool) bool { return ıx }
-	return inner(ix)
-}
-func elsewhere(ix bool) bool { return ix }
-func inverted(g func(ix bool), ıx bool) bool { return ıx }
-`)
-	require.Len(t, src.diagnostics, 7, "every ill-named boolean is reported, fix or no fix")
-
-	for i, tc := range []struct{ want, why string }{
-		{want: "rename ix to isIx", why: "the first claimant in a signature keeps the name"},
-		{want: "", why: "its sibling must yield, or the signature declares isIx twice"},
-		{want: "rename ix to isIx", why: "a different signature is a separate contest"},
-		{want: "", why: "a nested signature would shadow the name the enclosing one just took"},
-		{want: "rename ix to isIx", why: "an unrelated signature never contends"},
-		{want: "rename ıx to isIx", why: "the enclosing signature is visited first, though its name comes second in the line"},
-		{want: "", why: "the signature nested in a parameter type is visited second and yields"},
-	} {
-		fixes := src.diagnostics[i].SuggestedFixes
-		if tc.want == "" {
-			assert.Empty(t, fixes, tc.why)
-			continue
-		}
-		require.Len(t, fixes, 1, tc.why)
-		assert.Equal(t, tc.want, fixes[0].Message, tc.why)
-	}
-}
-
-// TestOverlapsAnswersTheSameBothWays names overlaps' claim. It decides whether
-// two proposals contend, and it is handed the pair in whatever order the
-// traversal produced them. A predicate that answered differently for (outer,
-// inner) than for (inner, outer) would let a colliding proposal through
-// whenever the traversal happened to reach the nested signature first.
-func TestOverlapsAnswersTheSameBothWays(t *testing.T) {
-	t.Parallel()
-	src := checked(t, `package p
-func outer(ready bool) bool {
-	inner := func(steady bool) bool { return steady }
-	return inner(ready)
-}
-func apart(distinct bool) bool { return distinct }
-`)
-	scopeOf := func(param string) *types.Scope {
-		var declared *types.Scope
-		ast.Inspect(src.file, func(n ast.Node) bool {
-			id, ok := n.(*ast.Ident)
-			if ok && id.Name == param && src.pass.TypesInfo.Defs[id] != nil {
-				declared = src.pass.TypesInfo.Defs[id].Parent()
-			}
-			return true
-		})
-		require.NotNil(t, declared, "no declaration of %s", param)
-		return declared
-	}
-	enclosing, nested, elsewhere := scopeOf("ready"), scopeOf("steady"), scopeOf("distinct")
-
-	assert.True(t, overlaps(enclosing, enclosing), "a scope always overlaps itself")
-	assert.True(t, overlaps(enclosing, nested), "an enclosing signature contends with a nested one")
-	assert.True(t, overlaps(nested, enclosing), "and the nested one contends with it, whichever comes first")
-	assert.False(t, overlaps(enclosing, elsewhere), "sibling signatures never contend")
-	assert.False(t, overlaps(elsewhere, enclosing), "in either order")
-}
-
 // TestEveryFixCompiles names the analyzer's central promise about its own
 // output: source it rewrites still builds. The promise is not discharged by
 // checking a proposal against the scope as it stands, because the other names
 // the same pass proposes are not in that scope yet — two parameters of one
 // signature renamed to the same identifier is "redeclared in this block", and
 // no golden comparison can see it.
+//
+// isSettled is the second half, and it is what compilation cannot express: a
+// name the analyzer reports but never rewrites is a fixed point that builds
+// perfectly and is reported forever. Every shape whose names CAN be renamed
+// leaves no finding behind, so a withdrawal that fires where it need not shows
+// up here rather than being mistaken for caution.
 func TestEveryFixCompiles(t *testing.T) {
 	t.Parallel()
 
@@ -137,6 +65,7 @@ func TestEveryFixCompiles(t *testing.T) {
 		src       string
 		why       string
 		isChanged bool
+		isSettled bool
 	}{
 		{
 			name: "collidingSiblings",
@@ -145,6 +74,16 @@ func dotless(ix bool, ıx bool) bool { return ix && ıx }
 `,
 			why:       "ASCII i and dotless ı (U+0131) upcase to the same I, so only one of the two may take isIx",
 			isChanged: true,
+			isSettled: false,
+		},
+		{
+			name: "collidingSiblingsNeitherRead",
+			src: `package p
+func unread(ix bool, ıx bool) {}
+`,
+			why:       "one scope cannot hold isIx twice whether or not either name is ever read, which is what separates a redeclaration from a shadowing",
+			isChanged: true,
+			isSettled: false,
 		},
 		{
 			name: "collidingSiblingsAcrossAFold",
@@ -153,6 +92,7 @@ func longs(ſx bool, sx bool) bool { return ſx && sx }
 `,
 			why:       "long s (U+017F) and s upcase to the same S, so only one of the two may take isSx",
 			isChanged: true,
+			isSettled: false,
 		},
 		{
 			name: "collidingResultAndParameter",
@@ -161,6 +101,7 @@ func split(ix bool) (ıx bool) { ıx = ix; return }
 `,
 			why:       "parameters and results share one signature scope, so a result collides with a parameter",
 			isChanged: true,
+			isSettled: false,
 		},
 		{
 			name: "threeWayCollision",
@@ -169,6 +110,7 @@ func three(ix bool, ıx bool, İx bool) bool { return ix && ıx && İx }
 `,
 			why:       "İ (U+0130) is already uppercase so İx is exported and unfixable; ix and ıx still contend for isIx",
 			isChanged: true,
+			isSettled: false,
 		},
 		{
 			name: "underscoreLed",
@@ -177,6 +119,7 @@ func under(_verbose bool) bool { return _verbose }
 `,
 			why:       "is_verbose has no upper-case boundary after the prefix, so the rule rejects it",
 			isChanged: false,
+			isSettled: false,
 		},
 		{
 			name: "caselessScript",
@@ -185,6 +128,67 @@ func cjk(有効 bool) bool { return 有効 }
 `,
 			why:       "有 has no upper case, so no is-prefixed rename of it can satisfy the rule",
 			isChanged: false,
+			isSettled: false,
+		},
+		{
+			name: "nestedSignatureSharingTheName",
+			src: `package p
+func shadowed(ready bool) bool {
+	inner := func(ready bool) bool { return ready }
+	return inner(ready)
+}
+`,
+			why:       "the nested declaration already shadows the enclosing one, so both rename and neither is left reported",
+			isChanged: true,
+			isSettled: true,
+		},
+		{
+			name: "nestedSignaturesSharingTheNameThreeDeep",
+			src: `package p
+func deep(ready bool) bool {
+	one := func(ready bool) bool {
+		two := func(ready bool) bool { return ready }
+		return two(ready)
+	}
+	return one(ready)
+}
+`,
+			why:       "withdrawing on nesting alone strands every level but the outermost, and each stranding is permanent",
+			isChanged: true,
+			isSettled: true,
+		},
+		{
+			name: "bodylessNestedSignature",
+			src: `package p
+func fb(g func(sx bool), ſx bool) bool { _ = g; return ſx }
+`,
+			why:       "the nested func TYPE has no body, so its parameter name has no reference anywhere to be captured",
+			isChanged: true,
+			isSettled: true,
+		},
+		{
+			name: "nestedSignatureReadingNothingOutside",
+			src: `package p
+func apart(ix bool) bool {
+	inner := func(ıx bool) bool { return ıx }
+	return inner(ix)
+}
+`,
+			why:       "distinct names still rename together when the nested body reads nothing from the enclosing signature",
+			isChanged: true,
+			isSettled: true,
+		},
+		{
+			name: "nestedSignatureCapturingTheEnclosingName",
+			src: `package p
+func held(ix bool) bool {
+	inner := func(ıx bool) bool { return ıx && !ix }
+	return inner(ix)
+}
+`,
+			why:       "renaming both would leave `isIx && !isIx`, which builds, vets clean and is constant false, so the nested name is reported and not rewritten",
+			isChanged: true,
+			isSettled: false,
 		},
 		{
 			name: "plainRename",
@@ -193,6 +197,7 @@ func ok(ready bool) bool { return ready }
 `,
 			why:       "a name with no collision and no case obstacle must still be rewritten, or the cases above prove nothing",
 			isChanged: true,
+			isSettled: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -202,8 +207,10 @@ func ok(ready bool) bool { return ready }
 			assert.NoError(t, compile(once).err, "%s: the rewritten source must build", tc.why)
 			assert.Equal(t, tc.isChanged, once != tc.src, "%s", tc.why)
 
-			twice := analyzed(t, once).applied()
-			assert.Equal(t, once, twice, "a second -fix must change nothing: %s", tc.why)
+			settled := analyzed(t, once)
+			assert.Equal(t, once, settled.applied(), "a second -fix must change nothing: %s", tc.why)
+			assert.Equal(t, tc.isSettled, len(settled.diagnostics) == 0,
+				"%s: whatever is still reported here is reported on every run forever", tc.why)
 		})
 	}
 }

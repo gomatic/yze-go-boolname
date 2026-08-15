@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestHasASCIIPrefixFoldMatchesExactlyTheASCIICaseFold names the claim that
@@ -80,5 +81,36 @@ func TestMatchesPrefixRequiresAWordBoundaryAfterThePrefix(t *testing.T) {
 	} {
 		assert.Equal(t, tc.want, matchesPrefix(tc.name, "is"),
 			"matchesPrefix(%q, \"is\"): %s", tc.name, tc.why)
+	}
+}
+
+// TestReferencesToFindsTheDeclarationAndEveryRead names referencesTo's claim
+// that it is EXACTLY the set a rename rewrites. Both halves are load-bearing
+// and each is missed by a different failure. Miss the declaration and the
+// rewrite leaves it behind, so every read now names an undefined symbol; miss a
+// read and the read keeps the old spelling, which is the same error the other
+// way round. And the set is keyed on the OBJECT, never on the spelling: another
+// symbol with the same name in another signature is a different object and must
+// not be swept in, or the rename reaches into a function it was never about.
+func TestReferencesToFindsTheDeclarationAndEveryRead(t *testing.T) {
+	t.Parallel()
+	src := checked(t, `package p
+func subject(ready bool) bool {
+	if ready {
+		return ready
+	}
+	return !ready
+}
+func elsewhere(ready bool) bool { return ready }
+`)
+	name := paramOf(t, src.file, "subject")
+	found := referencesTo(src.pass, src.pass.TypesInfo.Defs[name])
+
+	require.Len(t, found, 4, "the declaration and its three reads, and nothing from elsewhere")
+	assert.Same(t, name, found[0], "the declaration comes first, in source order")
+	for _, id := range found[1:] {
+		assert.Equal(t, "ready", id.Name)
+		assert.Less(t, id.Pos(), paramOf(t, src.file, "elsewhere").Pos(),
+			"every reference is inside subject; elsewhere declares a different object of the same name")
 	}
 }

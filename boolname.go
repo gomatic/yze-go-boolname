@@ -61,7 +61,7 @@ func run(pass *analysis.Pass) (any, error) {
 			found = append(found, candidatesIn(pass, field, fixable(!isStruct))...)
 		}
 	})
-	for _, reported := range reconciled(found) {
+	for _, reported := range reconciled(pass, found) {
 		pass.Report(reported.diagnostic(pass))
 	}
 	return nil, nil
