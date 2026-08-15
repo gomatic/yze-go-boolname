@@ -87,3 +87,80 @@ func bodylessNested(
 	_ = g
 	return ſunk
 }
+
+// blockNestedCapture varies the one dimension every case above holds constant:
+// the scope DISTANCE between the two contenders. A bare block between the
+// enclosing signature and the nested one puts the nested scope two scopes below
+// the enclosing one rather than one, so a containment walk that looked only at
+// the immediate parent would decide the two do not nest at all, find no capture
+// and rename both — leaving `isSane && !isSane`, which compiles, vets clean and
+// is constant false.
+func blockNestedCapture(
+	sane bool, // want `boolean sane should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+) bool {
+	{
+		inner := func(
+			ſane bool, // want `boolean ſane should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+		) bool {
+			return ſane && !sane
+		}
+		return inner(sane)
+	}
+}
+
+// ifNestedCapture puts the same capture three scopes down instead of two: an if
+// statement opens a scope for its init and condition and its body opens
+// another, so a walk bounded at any fixed depth admits a shape one placement
+// deeper than whatever the bound is.
+func ifNestedCapture(
+	icy bool, // want `boolean icy should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+) bool {
+	if icy {
+		inner := func(
+			ıcy bool, // want `boolean ıcy should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+		) bool {
+			return ıcy && !icy
+		}
+		return inner(icy)
+	}
+	return icy
+}
+
+// deepNestedCapture varies the nesting DEPTH as well as the distance: the
+// capture is between the outermost and the innermost of three signatures, with
+// a middle one contending for a different name in between. Reconciling a
+// candidate against only the claimant before it — rather than against every
+// claimant kept so far — passes every case above and captures here.
+func deepNestedCapture(
+	sly bool, // want `boolean sly should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+) bool {
+	mid := func(
+		keen bool, // want `boolean k.en should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+	) bool {
+		deep := func(
+			ſly bool, // want `boolean ſly should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+		) bool {
+			return ſly && !sly
+		}
+		return deep(keen)
+	}
+	return mid(sly)
+}
+
+// blockNestedFree is the same distance in the direction where capture is
+// IMPOSSIBLE, and it is what stops the distance from being treated as the
+// danger. The enclosing name is read inside the intervening block but outside
+// the nested signature, so nothing the shared identifier would shadow is read
+// where the shadow reaches, and both names rename.
+func blockNestedFree(
+	stray bool, // want `boolean stray should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+) bool {
+	{
+		inner := func(
+			ſtray bool, // want `boolean ſ.ray should use an is/has/can/should/will prefix or an Enabled/Disabled suffix`
+		) bool {
+			return ſtray
+		}
+		return inner(stray)
+	}
+}

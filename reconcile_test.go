@@ -1,8 +1,8 @@
 package boolname
 
-// White-box tests for reconciling the proposals against each other. Every
-// contract here is about a PAIR: whether two candidates wanting one identifier
-// may both have it, and what the rewrite must never do to earn that answer.
+// White-box tests for reconciling the proposals against each other: which of
+// two candidates wanting one identifier keeps it, and what the rewrite must
+// never do to earn that answer.
 
 import (
 	"go/ast"
@@ -68,108 +68,6 @@ func inverted(g func(ix bool), ıx bool) bool { return ıx }
 		}
 		require.Len(t, fixes, 1, tc.why)
 		assert.Equal(t, tc.want, fixes[0].Message, tc.why)
-	}
-}
-
-// contenders builds the fixture both predicates below are judged on and returns
-// a lookup from a parameter name to its declarations, in source order.
-func contenders(t *testing.T) (*source, func(string) []candidate) {
-	t.Helper()
-	src := checked(t, `package p
-func siblings(ax bool, bx bool) {}
-func captured(ix bool) bool {
-	inner := func(iy bool) bool { return iy && ix }
-	return inner(ix)
-}
-func free(px bool) bool {
-	inner := func(py bool) bool { return py }
-	return inner(px)
-}
-func shadowing(ready bool) bool {
-	inner := func(ready bool) bool { return ready }
-	return inner(ready)
-}
-func bodyless(g func(sx bool), tx bool) bool { return tx }
-func apart(distinct bool) bool { return distinct }
-`)
-	return src, func(param string) []candidate {
-		var found []candidate
-		ast.Inspect(src.file, func(n ast.Node) bool {
-			id, ok := n.(*ast.Ident)
-			if ok && id.Name == param && src.pass.TypesInfo.Defs[id] != nil {
-				found = append(found, candidate{name: id, obj: src.pass.TypesInfo.Defs[id]})
-			}
-			return true
-		})
-		require.NotEmpty(t, found, "no declaration of %s", param)
-		return found
-	}
-}
-
-// TestCapturesSeesOnlyAReadInsideTheNestedScope names captures' claim, which is
-// the whole discriminator and which neither the compiler nor a golden file can
-// check — a capture BUILDS. Two claims are pinned here. It counts READS, not
-// every identifier the rename rewrites: an enclosing declaration always sits
-// inside its own scope, so counting declarations would make every pair capture.
-// And it is DIRECTIONAL: only the enclosing declaration is the one shadowed, so
-// the same pair handed the other way round captures nothing.
-func TestCapturesSeesOnlyAReadInsideTheNestedScope(t *testing.T) {
-	t.Parallel()
-	src, declarations := contenders(t)
-	only := func(param string) candidate { return declarations(param)[0] }
-	shadowed := declarations("ready")
-	require.Len(t, shadowed, 2, "the shadowing fixture must declare ready twice")
-
-	for _, tc := range []struct {
-		outer, inner candidate
-		why          string
-		want         bool
-	}{
-		{outer: only("ix"), inner: only("iy"), want: true, why: "the nested body reads the enclosing ix, so one identifier would rebind that read"},
-		{outer: only("px"), inner: only("py"), want: false, why: "the nested body reads nothing from the enclosing signature"},
-		{outer: shadowed[0], inner: shadowed[1], want: false, why: "the nested declaration already shadows the enclosing one, so nothing there reads it"},
-		{outer: only("tx"), inner: only("sx"), want: false, why: "a bodyless nested signature has no body for a read to sit in"},
-		{outer: only("distinct"), inner: only("ix"), want: false, why: "unrelated signatures do not nest at all"},
-	} {
-		t.Run(tc.outer.name.Name+"-"+tc.inner.name.Name, func(t *testing.T) {
-			assert.Equal(t, tc.want, captures(src.pass, tc.outer, tc.inner), tc.why)
-			assert.False(t, captures(src.pass, tc.inner, tc.outer),
-				"the nested scope encloses nothing, so it can never be the one doing the capturing: %s", tc.why)
-		})
-	}
-}
-
-// TestContendsAnswersTheSameBothWays names contends' claim. It decides whether
-// two proposals may both be taken, and it is handed the pair in whatever order
-// the traversal produced them. A predicate that answered differently for
-// (outer, inner) than for (inner, outer) would let a colliding proposal through
-// whenever the traversal happened to reach the nested signature first — and
-// would strand a safe one whenever it did not. The first case is the one
-// captures cannot answer: a redeclaration in one scope is illegal whether or
-// not either name is ever read, so nothing about references decides it.
-func TestContendsAnswersTheSameBothWays(t *testing.T) {
-	t.Parallel()
-	src, declarations := contenders(t)
-	only := func(param string) candidate { return declarations(param)[0] }
-	shadowed := declarations("ready")
-	require.Len(t, shadowed, 2, "the shadowing fixture must declare ready twice")
-
-	for _, tc := range []struct {
-		a, b candidate
-		why  string
-		want bool
-	}{
-		{a: only("ax"), b: only("bx"), want: true, why: "one scope cannot hold the identifier twice, however little either name is read"},
-		{a: only("ix"), b: only("iy"), want: true, why: "the nested body reads the enclosing ix, so one identifier would rebind it"},
-		{a: only("px"), b: only("py"), want: false, why: "the nested body reads nothing from the enclosing signature"},
-		{a: shadowed[0], b: shadowed[1], want: false, why: "the nested declaration already shadows the enclosing one"},
-		{a: only("sx"), b: only("tx"), want: false, why: "a bodyless nested signature has no reference to capture"},
-		{a: only("distinct"), b: only("ix"), want: false, why: "sibling signatures never contend"},
-	} {
-		t.Run(tc.a.name.Name+"-"+tc.b.name.Name, func(t *testing.T) {
-			assert.Equal(t, tc.want, contends(src.pass, tc.a, tc.b), tc.why)
-			assert.Equal(t, tc.want, contends(src.pass, tc.b, tc.a), "answered the other way round: %s", tc.why)
-		})
 	}
 }
 
