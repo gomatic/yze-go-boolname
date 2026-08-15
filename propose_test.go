@@ -50,10 +50,12 @@ func fine(ready bool) bool { return ready }
 
 // TestReconciledLetsTheFirstClaimantKeepTheName names reconciled's claim. Two
 // candidates proposing one identifier is the defect this pass exists to catch,
-// and which of them keeps it is decided by source order rather than by
-// traversal luck, or the same input yields different fixes on different runs. A
-// nested signature contends too: the analyzer refuses to shadow a name that
-// already exists, so it refuses to shadow one it is about to introduce.
+// and which of them keeps it must be settled the same way on every run. It is
+// settled by the order the traversal reaches them, which is NOT source order —
+// an enclosing signature is visited before one nested inside it, so the last
+// case below has the textually later name winning. A nested signature contends
+// at all because the analyzer refuses to shadow a name that already exists, so
+// it refuses to shadow one it is about to introduce.
 func TestReconciledLetsTheFirstClaimantKeepTheName(t *testing.T) {
 	t.Parallel()
 	src := analyzed(t, `package p
@@ -63,8 +65,9 @@ func nested(ix bool) bool {
 	return inner(ix)
 }
 func elsewhere(ix bool) bool { return ix }
+func inverted(g func(ix bool), ıx bool) bool { return ıx }
 `)
-	require.Len(t, src.diagnostics, 5, "every ill-named boolean is reported, fix or no fix")
+	require.Len(t, src.diagnostics, 7, "every ill-named boolean is reported, fix or no fix")
 
 	for i, tc := range []struct{ want, why string }{
 		{want: "rename ix to isIx", why: "the first claimant in a signature keeps the name"},
@@ -72,6 +75,8 @@ func elsewhere(ix bool) bool { return ix }
 		{want: "rename ix to isIx", why: "a different signature is a separate contest"},
 		{want: "", why: "a nested signature would shadow the name the enclosing one just took"},
 		{want: "rename ix to isIx", why: "an unrelated signature never contends"},
+		{want: "rename ıx to isIx", why: "the enclosing signature is visited first, though its name comes second in the line"},
+		{want: "", why: "the signature nested in a parameter type is visited second and yields"},
 	} {
 		fixes := src.diagnostics[i].SuggestedFixes
 		if tc.want == "" {

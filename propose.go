@@ -55,9 +55,16 @@ func proposalFor(name *ast.Ident, obj types.Object, isFixable fixable) identName
 // one fix at a time. collides answers for the scope as it stands, where none of
 // these names is declared yet, so it cannot see this: `func f(ix, ıx bool)`
 // upper-cases both first runes to I and proposes isIx twice, which is
-// "redeclared in this block". Source order decides, so the first name to want
-// an identifier keeps it and the rest are reported without a fix; the withheld
-// ones become ordinary collisions on the next run, once the winner is declared.
+// "redeclared in this block". The first candidate to want an identifier keeps
+// it and the rest are reported without a fix; the withheld ones become ordinary
+// collisions on the next run, once the winner is declared.
+//
+// First means first VISITED, which is the AST traversal's order and not source
+// order: an enclosing signature is always reached before one nested inside it,
+// so in `func a(g func(ix bool), ıx bool)` the outer signature's ıx wins over
+// the ix declared earlier in the line. That is deterministic — the traversal
+// and the file order are both fixed — but it is not positional, and reading it
+// as positional would make the winner look arbitrary.
 func reconciled(candidates []candidate) []candidate {
 	kept := make([]candidate, 0, len(candidates))
 	for _, reported := range candidates {
