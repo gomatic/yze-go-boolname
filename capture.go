@@ -49,6 +49,15 @@ func captures(pass *analysis.Pass, outer, inner candidate) bool {
 // contending signatures is unbounded: a bare block or an enclosing literal puts
 // the nested one two scopes down, and a statement that opens a scope for its own
 // header puts it three.
+//
+// Its includes-self case is unreachable today and no case can be written for
+// it, which is worth saying rather than papering over: contends answers equal
+// scopes with its own first disjunct before captures is ever called, so every
+// pair arriving here has outer strictly enclosing inner or not enclosing it at
+// all. Starting the walk at inner.Parent() would answer identically. That is a
+// COUPLING and not decoration — removing or reordering contends' same-scope
+// disjunct makes the case live, and this is the guard that would then have to
+// hold it.
 func encloses(outer, inner *types.Scope) bool {
 	for scope := inner; scope != nil; scope = scope.Parent() {
 		if scope == outer {

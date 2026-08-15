@@ -56,7 +56,10 @@ func (c candidate) against(pass *analysis.Pass, earlier []candidate) candidate {
 }
 
 // meets returns the predicate deciding whether an earlier candidate's proposal
-// would land on c's.
+// would land on c's. It asks contends ONE way round, and that is safe only
+// because contends answers the same both ways — which is a coupling to that
+// promise rather than an assumption about this pair, since the order the two
+// arrive in is the traversal's accident.
 func (c candidate) meets(pass *analysis.Pass) func(candidate) bool {
 	return func(other candidate) bool {
 		return other.proposed == c.proposed && contends(pass, other, c)
