@@ -7,4 +7,4 @@
 
 //go:build library_marker
 
-package boolname_test
+package boolname
